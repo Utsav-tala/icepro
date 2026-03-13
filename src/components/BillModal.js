@@ -2,7 +2,6 @@
 import { useState, useRef, useEffect } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase";
-import { ITEM_CATALOG } from "../constants";
 import { genInvNo, toWords, printInvoice, shareWhatsApp, computeBalance } from "../helpers";
 import { Lbl, Modal, Spin } from "./UI";
 
@@ -12,7 +11,7 @@ const C = {
 };
 
 // ── CREATE BILL MODAL ─────────────────────────────────────────────────────────
-export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, bills = [], payments = [] }) {
+export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, bills = [], payments = [], products = [] }) {
   const [agencyId,    setAgencyId]    = useState(preAgencyId || "");
   const [notes,       setNotes]       = useState("");
   const [discountPct, setDiscountPct] = useState("");
@@ -21,7 +20,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   const [err,         setErr]         = useState("");
   const [saved,       setSaved]       = useState(null);
 
-  // Active search row state
+  // Active search row
   const [searchQ,    setSearchQ]    = useState("");
   const [dropOpen,   setDropOpen]   = useState(false);
   const [dropIndex,  setDropIndex]  = useState(-1);
@@ -35,15 +34,16 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
 
   useEffect(() => { setTimeout(() => searchRef.current?.focus(), 120); }, []);
 
-  // Show ALL items on focus, filter when typing
+  // Filter catalog — show all on focus, filter when typing
+  const catalog  = products.length > 0 ? products : [];
   const filtered = searchQ.trim().length > 0
-    ? ITEM_CATALOG.filter(c => c.name.toLowerCase().includes(searchQ.toLowerCase()))
-    : ITEM_CATALOG;
+    ? catalog.filter(c => c.name.toLowerCase().includes(searchQ.toLowerCase()))
+    : catalog;
 
-  function pickItem(cat) {
-    setSearchQ(cat.name);
-    setPickedItem(cat);
-    setRate(String(cat.rate));
+  function pickItem(prod) {
+    setSearchQ(prod.name);
+    setPickedItem(prod);
+    setRate(String(prod.rate));
     setDropOpen(false);
     setDropIndex(-1);
     setTimeout(() => qtyRef.current?.focus(), 50);
@@ -58,9 +58,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
     setTimeout(() => searchRef.current?.focus(), 50);
   }
 
-  function handleQtyEnter(e) {
-    if (e.key === "Enter") { e.preventDefault(); lockItem(); }
-  }
+  function handleQtyEnter(e) { if (e.key === "Enter") { e.preventDefault(); lockItem(); } }
 
   function scrollDropToIndex(idx) {
     if (!dropRef.current) return;
@@ -70,20 +68,17 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
 
   function handleSearchKeyDown(e) {
     if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setDropOpen(true);
-      setDropIndex(i => { const next = Math.min(i + 1, filtered.length - 1); setTimeout(() => scrollDropToIndex(next), 10); return next; });
+      e.preventDefault(); setDropOpen(true);
+      setDropIndex(i => { const n = Math.min(i + 1, filtered.length - 1); setTimeout(() => scrollDropToIndex(n), 10); return n; });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setDropIndex(i => { const next = Math.max(i - 1, 0); setTimeout(() => scrollDropToIndex(next), 10); return next; });
+      setDropIndex(i => { const n = Math.max(i - 1, 0); setTimeout(() => scrollDropToIndex(n), 10); return n; });
     } else if (e.key === "Enter" && dropOpen && dropIndex >= 0) {
-      e.preventDefault();
-      pickItem(filtered[dropIndex]);
+      e.preventDefault(); pickItem(filtered[dropIndex]);
     }
   }
 
   function removeItem(i) { setLockedItems(p => p.filter((_, idx) => idx !== i)); }
-
   function editLocked(i, field, val) {
     setLockedItems(p => {
       const a = [...p]; a[i] = { ...a[i], [field]: val };
@@ -96,13 +91,13 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   const subtotal = lockedItems.reduce((s, it) => s + (it.amount || 0), 0);
   const discPct  = Number(discountPct) || 0;
   const discAmt  = subtotal * discPct / 100;
-  const billAmt  = subtotal - discAmt;   // actual current bill amount (stored as bill.total)
+  const billAmt  = subtotal - discAmt;
 
-  // Live balance: rawBal>0 = outstanding (add), rawBal<0 = advance credit (subtract)
+  // Live balance
   const rawBal      = agencyId ? computeBalance(agencyId, bills, payments) : 0;
-  const prevBal     = rawBal > 0 ? rawBal : 0;             // pending outstanding to add
-  const advanceUsed = rawBal < 0 ? Math.abs(rawBal) : 0;  // advance credit to deduct
-  const grandTotal  = Math.max(0, billAmt + rawBal);       // billAmt + prevBal - advanceUsed
+  const prevBal     = rawBal > 0 ? rawBal : 0;
+  const advanceUsed = rawBal < 0 ? Math.abs(rawBal) : 0;
+  const grandTotal  = Math.max(0, billAmt + rawBal);
 
   async function handleSave() {
     if (!agencyId)                return setErr("Please select an agency.");
@@ -119,17 +114,17 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
         subtotal,
         discountPct:   discPct,
         discountAmt:   discAmt,
-        total:         billAmt,       // ← actual bill amount only (for balance math)
-        prevBalance:   prevBal,       // ← previous pending stored for display
-        advanceUsed:   advanceUsed,   // ← advance credit deducted (for display)
-        grandTotal:    grandTotal,    // ← total due for display/print/WA
+        total:         billAmt,       // actual bill amount (for balance math)
+        prevBalance:   prevBal,       // previous outstanding (for display)
+        advanceUsed:   advanceUsed,   // advance credit deducted (for display)
+        grandTotal:    grandTotal,    // total due shown on bill
         notes,
         createdByName: currentUser?.name || "",
         createdByUid:  currentUser?.uid  || "",
         createdAt:     serverTimestamp(),
       });
 
-      // Write transaction record under agency
+      // Transaction entry under agency
       await addDoc(collection(db, "agencies", agencyId, "transactions"), {
         type:          "bill",
         billNo,
@@ -143,12 +138,12 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
 
       const savedBill = {
         id: ref.id, billNo, agencyId,
-        agencyName:  agency?.name || "",
-        items:       lockedItems,
+        agencyName:    agency?.name || "",
+        items:         lockedItems,
         subtotal,
-        discountAmt: discAmt,
-        total:       billAmt,
-        prevBalance: prevBal,
+        discountAmt:   discAmt,
+        total:         billAmt,
+        prevBalance:   prevBal,
         advanceUsed,
         grandTotal,
         notes,
@@ -166,7 +161,6 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: C.redDark, marginBottom: 4 }}>{saved.bill.billNo}</div>
         <div style={{ fontSize: 14, color: C.textLight, marginBottom: 6 }}>{saved.bill.agencyName}</div>
 
-        {/* Bill summary */}
         <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, textAlign: "left" }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
             <span style={{ color: C.textLight }}>Current Bill</span>
@@ -190,10 +184,12 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
           </div>
         </div>
 
-        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Firestore</div>
+        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>
+          ✓ Saved to Firestore
+        </div>
         <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
           <button className="btn btn-red"   style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => printInvoice(saved.bill, saved.agency)}>🖨️ Print / PDF</button>
-          <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency)}>💬 Send on WhatsApp</button>
+          <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency)}>💬 WhatsApp</button>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
         </div>
       </div>
@@ -202,7 +198,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
 
   return (
     <Modal title="🧾 Create New Bill" onClose={onClose} wide>
-      {/* Agency */}
+      {/* Agency selector */}
       <div style={{ marginBottom: 14 }}>
         <Lbl>Select Agency *</Lbl>
         <select className="sel" value={agencyId} onChange={e => { setAgencyId(e.target.value); setErr(""); }}>
@@ -211,15 +207,22 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
         </select>
       </div>
 
-      {/* Previous balance alert */}
+      {/* Balance alerts */}
       {agencyId && prevBal > 0 && (
         <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderLeft: "4px solid #ffc107", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
-          ⚠️ This agency has <strong>Rs. {prevBal.toLocaleString()}</strong> pending from previous bills. It will be added to this bill's total.
+          ⚠️ This agency has <strong>Rs. {prevBal.toLocaleString()}</strong> pending — it will be added to this bill's total.
         </div>
       )}
       {agencyId && rawBal < 0 && (
         <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderLeft: "4px solid #10b981", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "#065f46" }}>
-          This agency has <strong>Rs. {Math.abs(rawBal).toLocaleString()}</strong> advance credit — it will be deducted from this bill's total.
+          This agency has <strong>Rs. {advanceUsed.toLocaleString()}</strong> advance credit — it will be deducted from this bill's total.
+        </div>
+      )}
+
+      {/* No products warning */}
+      {products.length === 0 && (
+        <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
+          ⚠️ Product catalog is loading or empty. Go to Products page to add items.
         </div>
       )}
 
@@ -237,10 +240,10 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
           {/* Locked items */}
           {lockedItems.map((it, i) => (
             <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 100px 28px", gap: 8, padding: "8px 12px", borderBottom: `1px solid ${C.border}`, alignItems: "center", background: i % 2 === 0 ? "#fff" : "#fffcfc" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.text, paddingLeft: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</div>
               <input className="inp" style={{ padding: "5px 6px", fontSize: 12, textAlign: "center" }} type="number" min="1" value={it.qty} onChange={e => editLocked(i, "qty", e.target.value)} />
               <input className="inp" style={{ padding: "5px 6px", fontSize: 12, textAlign: "right" }} type="number" value={it.rate} onChange={e => editLocked(i, "rate", e.target.value)} />
-              <div style={{ fontWeight: 800, fontSize: 13, color: C.redDark, textAlign: "right", paddingRight: 4 }}>Rs.{(it.amount || 0).toLocaleString()}</div>
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.redDark, textAlign: "right" }}>Rs.{(it.amount || 0).toLocaleString()}</div>
               <button onClick={() => removeItem(i)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, color: C.textLight }}>✕</button>
             </div>
           ))}
@@ -252,28 +255,29 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
                 ref={searchRef}
                 className="inp"
                 style={{ padding: "7px 10px", fontSize: 12, background: pickedItem ? "#f0fff4" : "#fff", borderColor: pickedItem ? "#10b981" : C.border }}
-                placeholder="🔍 Type to search item..."
+                placeholder={catalog.length > 0 ? "🔍 Search or click to browse all products..." : "Loading products..."}
                 value={searchQ}
                 onChange={e => { setSearchQ(e.target.value); setPickedItem(null); setRate(""); setDropOpen(true); setDropIndex(-1); }}
                 onFocus={() => setDropOpen(true)}
                 onBlur={() => setTimeout(() => { setDropOpen(false); setDropIndex(-1); }, 180)}
                 onKeyDown={handleSearchKeyDown}
+                disabled={catalog.length === 0}
               />
               {dropOpen && filtered.length > 0 && (
                 <div className="idrop" ref={dropRef}>
-                  {filtered.map((c, idx) => (
-                    <div key={c.id} className="iopt"
+                  {filtered.map((p, idx) => (
+                    <div key={p.id} className="iopt"
                       style={{ background: idx === dropIndex ? "#fff0f0" : undefined }}
-                      onMouseDown={() => pickItem(c)}>
-                      <div className="iopt-name">{c.name}</div>
-                      <div className="iopt-rate">Rs. {c.rate} / box</div>
+                      onMouseDown={() => pickItem(p)}>
+                      <div className="iopt-name">{p.name}</div>
+                      <div className="iopt-rate">Rs. {p.rate} / box</div>
                     </div>
                   ))}
                 </div>
               )}
               {dropOpen && searchQ.trim().length > 0 && filtered.length === 0 && (
                 <div className="idrop">
-                  <div className="iopt"><span style={{ color: C.textLight, fontSize: 12 }}>No items found for "{searchQ}"</span></div>
+                  <div className="iopt"><span style={{ color: C.textLight, fontSize: 12 }}>No products found for "{searchQ}"</span></div>
                 </div>
               )}
             </div>
@@ -283,11 +287,10 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
             <input className="inp" style={{ padding: "7px 8px", fontSize: 12, textAlign: "right", opacity: pickedItem ? 1 : 0.4 }}
               type="number" placeholder="Rate" value={rate} disabled={!pickedItem}
               onChange={e => setRate(e.target.value)} />
-            <div style={{ fontWeight: 800, fontSize: 13, color: pickedItem && qty ? C.redDark : C.textLight, textAlign: "right", paddingRight: 4 }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: pickedItem && qty ? C.redDark : C.textLight, textAlign: "right" }}>
               {pickedItem && qty ? `Rs.${(Number(qty) * Number(rate)).toLocaleString()}` : "—"}
             </div>
             <button onClick={lockItem} disabled={!pickedItem || !qty || Number(qty) <= 0}
-              title="Add item (or press Enter in Qty)"
               style={{ background: pickedItem && qty ? C.red : "#eee", border: "none", borderRadius: 6, cursor: pickedItem && qty ? "pointer" : "default", fontSize: 16, color: pickedItem && qty ? "#fff" : C.textLight, lineHeight: 1, padding: "4px 0", transition: "all 0.15s", fontWeight: 800 }}>+</button>
           </div>
 
