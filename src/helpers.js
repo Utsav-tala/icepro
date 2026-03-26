@@ -134,6 +134,7 @@ export function printInvoice(bill, agency, settings) {
         <th class="th" style="width:62px;">HSN/SAC</th>
         <th class="th" style="width:56px;">Qty</th>
         <th class="th" style="width:68px;">Rate</th>
+        <th class="th" style="width:46px;">Disc %</th>
         <th class="th" style="width:50px;">GST %</th>
         <th class="th" style="width:80px;">Amount</th>
       </tr>
@@ -148,6 +149,7 @@ export function printInvoice(bill, agency, settings) {
         <td class="td tdc">${it.hsn || ""}</td>
         <td class="td tdc">${Number(it.qty || 0).toFixed(3)}</td>
         <td class="td tdr">${Number(it.rate || 0).toFixed(2)}</td>
+        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.disc != null ? Number(it.disc).toFixed(1) + "%" : ""}</td>
         <td class="td tdc"></td>
         <td class="td tdr" style="font-weight:700;">${Number(it.amount || 0).toFixed(2)}</td>
       </tr>`).join("");
@@ -163,7 +165,7 @@ export function printInvoice(bill, agency, settings) {
         <td class="td tdc"></td><td class="td tdl"></td>
         <td class="td tdc"></td><td class="td tdc"></td>
         <td class="td tdr"></td><td class="td tdc"></td>
-        <td class="td tdr"></td>
+        <td class="td tdc"></td><td class="td tdr"></td>
        </tr>`
     ).join("");
   }
@@ -257,13 +259,13 @@ export function printInvoice(bill, agency, settings) {
                <span style="font-size:10px;font-weight:700;color:#555;">GSTIN No.: ${cGst}</span>
              </td>
              <td class="td tdc" style="font-weight:800;font-size:11px;">${totalQty.toFixed(3)}</td>
-             <td colspan="2" class="td tdr" style="font-weight:800;font-size:11px;">Sub Total</td>
+             <td colspan="3" class="td tdr" style="font-weight:800;font-size:11px;">Sub Total</td>
              <td class="td tdr" style="font-weight:800;font-size:11px;">${subtotal.toFixed(2)}</td>
            </tr>
          </tfoot>`
       : `<tfoot>
            <tr style="background:#f5f5f5;">
-             <td colspan="7" class="td tdl" style="font-size:9px;color:#888;font-style:italic;">
+             <td colspan="8" class="td tdl" style="font-size:9px;color:#888;font-style:italic;">
                Page ${pi + 1} of ${totalPages} &nbsp;·&nbsp;
                Cumulative Qty: ${cumQty.toFixed(3)} &nbsp;·&nbsp;
                Continued on next page...
@@ -455,9 +457,19 @@ export function shareWhatsApp(bill, agency, settings) {
   const advUsed  = Number(bill.advanceUsed) || 0;
   const grandTotal = Math.max(0, billAmt + prevBal - advUsed);
   const date     = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || new Date().toLocaleDateString("en-IN");
-  const lines    = items.map((it, i) =>
-    `  ${i + 1}. ${it.name}\n     Qty: ${it.qty}  x  Rs.${it.rate}  =  *Rs.${it.amount}*`
-  ).join("\n");
+  const lines = items.map((it, i) => {
+    const gross   = Number(it.qty) * Number(it.rate);
+    const netAmt  = Number(it.amount || gross);
+    const discPct = it.disc != null ? Number(it.disc) : null;
+    const discAmt = discPct && discPct > 0 ? gross - netAmt : 0;
+    const discLine = discPct != null && discPct > 0
+      ? `\n     🏷️ ${discPct.toFixed(1)}% disc  |  Discount Amt: Rs.${discAmt.toFixed(0)}  |  ${gross.toFixed(0)} - ${discAmt.toFixed(0)} = *Rs.${netAmt.toFixed(2)}*`
+      : `  =  *Rs.${netAmt.toFixed(2)}*`;
+    const grossLine = discPct != null && discPct > 0
+      ? `Rs.${gross.toFixed(0)}`
+      : `*Rs.${netAmt.toFixed(2)}*`;
+    return `  ${i + 1}. ${it.name}\n     Qty: ${it.qty}  ×  Rs.${it.rate}  =  ${grossLine}${discLine}`;
+  }).join("\n");
 
   let totals = `Sub Total         : Rs. ${sub.toFixed(2)}\n`;
   if (disc > 0)    totals += `Discount          : Rs. ${disc.toFixed(2)}\n`;

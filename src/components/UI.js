@@ -21,12 +21,12 @@ export function Logo({ size = 48, showText = true }) {
       <img
         src={LOGO_URL}
         alt="logo"
-        style={{ height: size, width: "auto", objectFit: "contain", borderRadius: 8, mixBlendMode: "multiply", filter: "drop-shadow(0 2px 6px rgba(200,24,30,0.3))" }}
+        style={{ height: size, width: "auto", objectFit: "contain", borderRadius: 8, filter: "drop-shadow(0 2px 8px rgba(200,24,30,0.4))" }}
         onError={e => { e.target.style.display = "none"; }}
       />
       {showText && (
         <div>
-          <div className="brand-name">Shree Vrundavan</div>
+          <div className="brand-name">Vrundavan</div>
           <div className="brand-sub">Ice Cream</div>
         </div>
       )}
@@ -53,9 +53,9 @@ export function Modal({ title, onClose, children, wide }) {
   );
 }
 
-export function SC({ label, value, sub, icon, color, accent }) {
+export function SC({ label, value, sub, icon, color, accent, onClick, style }) {
   return (
-    <div className="sc" style={{ borderTop: `3px solid ${accent || "#c8181e"}` }}>
+    <div className="sc" style={{ borderTop: `3px solid ${accent || "#c8181e"}`, ...(onClick ? { cursor: "pointer" } : {}), ...style }} onClick={onClick}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <div style={{ fontSize: 11, color: "#a07070", marginBottom: 8, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px" }}>

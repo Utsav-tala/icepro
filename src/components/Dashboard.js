@@ -109,19 +109,24 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
             </div>
           </div>
           <div style={{ borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 90px", gap: 8, padding: "8px 14px", background: "#fef0f0", borderBottom: `1px solid ${C.border}` }}>
-              {["Product", "Qty", "Rate", "Amount"].map(h => (
-                <div key={h} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 55px 75px 60px 90px", gap: 8, padding: "8px 14px", background: "#fef0f0", borderBottom: `1px solid ${C.border}` }}>
+              {["Product", "Qty", "Rate", "Disc %", "Amount"].map((h, hi) => (
+                <div key={h} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", textAlign: hi >= 1 ? "right" : "left" }}>{h}</div>
               ))}
             </div>
-            {(b.items || []).map((it, i) => (
-              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 90px", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "#fff" : "#fffcfc", fontSize: 12 }}>
-                <div style={{ fontWeight: 600 }}>{it.name}</div>
-                <div style={{ textAlign: "center" }}>{it.qty}</div>
-                <div style={{ textAlign: "right" }}>Rs.{it.rate}</div>
-                <div style={{ textAlign: "right", fontWeight: 800, color: C.redDark }}>Rs.{(it.amount || 0).toLocaleString()}</div>
+            {(b.items || []).map((it, i) => {
+              const gross   = Number(it.qty) * Number(it.rate);
+              const discAmt = it.disc != null && Number(it.disc) > 0 ? gross - Number(it.amount) : 0;
+              return (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 55px 75px 60px 90px", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "#fff" : "#fffcfc", fontSize: 12, alignItems: "center" }}>
+                <div style={{ fontWeight: 600, color: C.text }}>{it.name}</div>
+                <div style={{ textAlign: "right" }}>{it.qty}</div>
+                <div style={{ textAlign: "right" }}>Rs. {Number(it.rate).toLocaleString()}</div>
+                <div style={{ textAlign: "right", color: "#065f46", fontWeight: 700 }}>{it.disc != null ? `${Number(it.disc).toFixed(1)}%` : "—"}</div>
+                <div style={{ textAlign: "right", fontWeight: 800, color: C.redDark }}>Rs. {Number(it.amount || 0).toLocaleString()}</div>
               </div>
-            ))}
+            );
+            })}
             <div style={{ padding: "8px 14px", background: "#fef8f8", borderTop: `1px solid ${C.border}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
                 <span style={{ color: C.textLight }}>Current Bill Amount</span>
@@ -464,17 +469,18 @@ export function Dashboard({ user, onLogout }) {
                 </div>
               </div>
               <div style={{ borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 16 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 90px", gap: 8, padding: "8px 14px", background: "#fef0f0", borderBottom: `1px solid ${C.border}` }}>
-                  {["Product", "Qty", "Rate", "Amount"].map(h => (
-                    <div key={h} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 55px 75px 60px 90px", gap: 8, padding: "8px 14px", background: "#fef0f0", borderBottom: `1px solid ${C.border}` }}>
+                  {["Product", "Qty", "Rate", "Disc %", "Amount"].map((h, hi) => (
+                    <div key={h} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", textAlign: hi >= 1 ? "right" : "left" }}>{h}</div>
                   ))}
                 </div>
                 {(b.items || []).map((it, i) => (
-                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 60px 80px 90px", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "#fff" : "#fffcfc", fontSize: 12 }}>
-                    <div style={{ fontWeight: 600 }}>{it.name}</div>
-                    <div style={{ textAlign: "center" }}>{it.qty}</div>
-                    <div style={{ textAlign: "right" }}>Rs.{it.rate}</div>
-                    <div style={{ textAlign: "right", fontWeight: 800, color: C.redDark }}>Rs.{(it.amount || 0).toLocaleString()}</div>
+                  <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 55px 75px 60px 90px", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "#fff" : "#fffcfc", fontSize: 12, alignItems: "center" }}>
+                    <div style={{ fontWeight: 600, color: C.text }}>{it.name}</div>
+                    <div style={{ textAlign: "right" }}>{it.qty}</div>
+                    <div style={{ textAlign: "right" }}>Rs. {Number(it.rate).toLocaleString()}</div>
+                    <div style={{ textAlign: "right", color: "#065f46", fontWeight: 700 }}>{it.disc != null ? `${Number(it.disc).toFixed(1)}%` : "—"}</div>
+                    <div style={{ textAlign: "right", fontWeight: 800, color: C.redDark }}>Rs. {Number(it.amount || 0).toLocaleString()}</div>
                   </div>
                 ))}
                 <div style={{ padding: "8px 14px", background: "#fef8f8", borderTop: `1px solid ${C.border}` }}>
@@ -536,18 +542,17 @@ export function Dashboard({ user, onLogout }) {
       {/* ── MAIN CONTENT ── */}
       <div className="main-content" style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
         
-        {/* Mobile Hamburger Header */}
+        {/* Mobile Hamburger Header — fixed via CSS on mobile */}
         <div className="mobile-header">
           <button className="hamburger" onClick={() => setDrawerOpen(true)}>☰</button>
           <Logo size={28} />
         </div>
-
         {/* ════ DASHBOARD HOME ════ */}
         {page === "dashboard" && !selAgency && (
           <div className="fi">
             <PageHeader
-              title={`Good morning, ${user?.name?.split(" ")[0] || "Owner"} 🌅`}
-              sub={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + " · Shree Vrundavan Ice Cream"}
+              title={`${(() => { const h = new Date().getHours(); return h >= 5 && h < 12 ? "Good morning" : h >= 12 && h < 17 ? "Good afternoon" : h >= 17 && h < 21 ? "Good evening" : "Good night"; })()}, ${user?.name?.split(" ")[0] || "Owner"} 🌅`}
+              sub={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + " · Vrundavan Ice Cream"}
               action={<button className="btn btn-red hide-mobile" onClick={() => setBillMod({ open: true, preId: "" })}>+ New Bill</button>}
             />
             {loadingData ? (

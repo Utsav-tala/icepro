@@ -13,8 +13,23 @@ import { Lbl, Logo, OtpInput, Spin } from "./UI";
 
 const C = {
   red: "#c8181e", redDark: "#9e1015", yellow: "#f5c518",
+  teal: "#0d9488", tealDark: "#0f766e", pink: "#fce7f3",
   text: "#1a0505", textLight: "#a07070", textMid: "#6b3333", border: "#f0dada",
+  cream: "#fff8f0", iceBg: "#fdf5f5",
 };
+
+const AUTH_CSS = `
+.auth-ice-wrap{min-height:100vh;display:flex;background:linear-gradient(135deg,#fff8f0 0%,#fce7f3 50%,#e0f2fe 100%);}
+.auth-ice-left{width:420px;background:linear-gradient(160deg,#9e1015 0%,#c8181e 45%,#d97706 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 40px;flex-shrink:0;position:relative;overflow:hidden;}
+.auth-ice-left::before{content:'';position:absolute;bottom:-60px;right:-60px;width:260px;height:260px;background:rgba(255,255,255,0.06);border-radius:50%;}
+.auth-ice-left::after{content:'';position:absolute;top:-40px;left:-40px;width:200px;height:200px;background:rgba(245,197,24,0.1);border-radius:50%;}
+.auth-ice-right{flex:1;display:flex;align-items:center;justify-content:center;padding:32px;}
+.auth-ice-card{background:#fff;border-radius:24px;padding:40px;width:100%;max-width:460px;box-shadow:0 20px 60px rgba(200,24,30,0.1),0 4px 20px rgba(0,0,0,0.05);border:1px solid #fce7f3;}
+.feat-list{list-style:none;padding:0;margin:0;}
+.feat-list li{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,0.85);font-size:13px;padding:5px 0;font-weight:500;}
+.feat-list li::before{content:'';width:6px;height:6px;border-radius:50%;background:#f5c518;flex-shrink:0;}
+@media(max-width:768px){.auth-ice-left{display:none;}.auth-ice-card{padding:28px;}.auth-ice-wrap{background:#fff;}}
+`;
 
 // ── SIGN UP ───────────────────────────────────────────────────────────────────
 export function SignupScreen({ onDone }) {
@@ -40,16 +55,23 @@ export function SignupScreen({ onDone }) {
       const snap = await getDoc(doc(db, "settings", "signup"));
       if (!snap.exists() || !snap.data().secretCode) {
         setLoading(false);
-        return setErr("Signup is unconfigured. Owner must set a code first.");
+        return setErr("Signup is unconfigured. Owner must set a secret code in Settings first.");
       }
       if (form.secretCode !== snap.data().secretCode) {
         setLoading(false);
-        return setErr("Invalid secret code. Contact the owner.");
+        return setErr("Invalid secret code. Please contact the owner for the correct code.");
       }
       setErr(""); setStep(2);
     } catch (e) {
       console.error(e);
-      setErr("Failed to verify secret code. Check your internet connection.");
+      // Common cause: Firestore rules don't allow unauthenticated read on settings/signup.
+      // In Firebase Console → Firestore → Rules, add:
+      //   match /settings/signup { allow read: if true; }
+      if (e.code === "permission-denied" || e.message?.includes("permission")) {
+        setErr("Access denied. Please ask the owner to enable signup in Settings.");
+      } else {
+        setErr("Could not connect. Please check your internet connection and try again.");
+      }
     }
     setLoading(false);
   }
@@ -85,28 +107,36 @@ export function SignupScreen({ onDone }) {
   );
 
   return (
-    <div className="auth-wrap"><style>{CSS}</style>
-      <div className="auth-left">
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 64, marginBottom: 16 }}>🍦</div>
-          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 26, color: "#fff", fontWeight: 800 }}>Shree Vrundavan</div>
-          <div style={{ fontSize: 16, color: C.yellow, fontWeight: 700, marginTop: 4 }}>Ice Cream</div>
-          <div style={{ width: 50, height: 3, background: C.yellow, borderRadius: 2, margin: "14px auto" }} />
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", lineHeight: 1.8 }}>Business Management Portal<br />Saurashtra · Gujarat</div>
+    <div className="auth-ice-wrap"><style>{CSS + AUTH_CSS}</style>
+      <div className="auth-ice-left">
+        <div style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
+          <div style={{ fontSize: 72, marginBottom: 8, lineHeight: 1 }}>🍦</div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 28, color: "#fff", fontWeight: 800, letterSpacing: "-0.5px" }}>Vrundavan</div>
+          <div style={{ fontSize: 14, color: C.yellow, fontWeight: 700, marginTop: 2, letterSpacing: "2px", textTransform: "uppercase" }}>Ice Cream</div>
+          <div style={{ width: 40, height: 2, background: "rgba(245,197,24,0.6)", borderRadius: 2, margin: "16px auto" }} />
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", fontWeight: 600, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 20 }}>Business Management Portal</div>
+          <ul className="feat-list">
+            <li>Manufacturing &amp; Production</li>
+            <li>Distribution &amp; Delivery</li>
+            <li>Inventory Management</li>
+            <li>Billing &amp; Invoicing</li>
+            <li>Agency Tracking</li>
+          </ul>
+          <div style={{ marginTop: 32, fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "2px", textTransform: "uppercase" }}>KALAVAD · GUJARAT · INDIA</div>
         </div>
       </div>
 
-      <div className="auth-right">
-        <div className="auth-card su">
+      <div className="auth-ice-right">
+        <div className="auth-ice-card su">
           {/* Step indicators */}
-          <div style={{ display: "flex", gap: 6, marginBottom: 24, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 28, alignItems: "center" }}>
             {["Details", "Verify", "Password"].map((s, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <div style={{ width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, background: step > i + 1 ? C.red : step === i + 1 ? C.red : "#f0dada", color: step >= i + 1 ? "#fff" : C.textLight }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, background: step > i + 1 ? C.red : step === i + 1 ? C.red : "#f0dada", color: step >= i + 1 ? "#fff" : C.textLight, boxShadow: step === i + 1 ? "0 4px 12px rgba(200,24,30,0.35)" : "none" }}>
                   {step > i + 1 ? "✓" : i + 1}
                 </div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: step === i + 1 ? C.red : C.textLight }}>{s}</div>
-                {i < 2 && <div style={{ width: 20, height: 2, background: step > i + 1 ? C.red : "#f0dada", borderRadius: 1 }} />}
+                <div style={{ fontSize: 11, fontWeight: 700, color: step === i + 1 ? C.red : C.textLight }}>{s}</div>
+                {i < 2 && <div style={{ width: 24, height: 2, background: step > i + 1 ? C.red : "#f0dada", borderRadius: 1 }} />}
               </div>
             ))}
           </div>
@@ -114,7 +144,7 @@ export function SignupScreen({ onDone }) {
           {/* Step 1 — Details */}
           {step === 1 && (
             <div className="fi">
-              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 21, color: C.redDark, marginBottom: 18 }}>Create Account</div>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, marginBottom: 20, fontWeight: 800 }}>Create Account</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 {F("First Name", "firstName", "text", "Utsav")}
                 {F("Last Name",  "lastName",  "text", "Tala")}
@@ -124,22 +154,23 @@ export function SignupScreen({ onDone }) {
               <div style={{ marginBottom: 12 }}>
                 <Lbl>Mobile Number</Lbl>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <div style={{ background: "#f9fafb", border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", fontSize: 13, color: C.textMid, fontWeight: 700, flexShrink: 0 }}>+91</div>
+                  <div style={{ background: "#fff8f0", border: `1.5px solid ${C.border}`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: C.textMid, fontWeight: 700, flexShrink: 0 }}>+91</div>
                   <input className="inp" type="tel" maxLength={10} placeholder="9825011234"
                     value={form.mobile} onChange={e => upd("mobile", e.target.value.replace(/\D/g, ""))} />
                 </div>
               </div>
-              <div style={{ marginBottom: 18 }}>
+              <div style={{ marginBottom: 20 }}>
                 <Lbl>Secret Code</Lbl>
                 <input className="inp" type="password" placeholder="Owner-provided code"
                   value={form.secretCode} onChange={e => upd("secretCode", e.target.value)} />
+                <div style={{ fontSize: 11, color: C.textLight, marginTop: 5 }}>Contact the business owner to get this code.</div>
               </div>
               {err && <div className="err-box">⚠️ {err}</div>}
-              <button className="btn btn-red" style={{ width: "100%", padding: 12 }} onClick={step1} disabled={loading}>
-                {loading ? <><Spin /> Verifying...</> : "Send OTP →"}
+              <button className="btn btn-red" style={{ width: "100%", padding: 13 }} onClick={step1} disabled={loading}>
+                {loading ? <><Spin /> Verifying...</> : "Continue →"}
               </button>
-              <div style={{ textAlign: "center", marginTop: 14, fontSize: 13, color: C.textLight }}>
-                Have account?{" "}
+              <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: C.textLight }}>
+                Already have an account?{" "}
                 <span style={{ color: C.red, fontWeight: 700, cursor: "pointer" }} onClick={() => onDone(null)}>Sign In</span>
               </div>
             </div>
@@ -148,22 +179,22 @@ export function SignupScreen({ onDone }) {
           {/* Step 2 — OTP */}
           {step === 2 && (
             <div className="fi">
-              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 21, color: C.redDark, marginBottom: 6 }}>Verify Mobile</div>
-              <div style={{ fontSize: 12, color: "#92400e", marginBottom: 16, background: "#fffbeb", padding: "8px 12px", borderRadius: 8, border: "1px solid #fde68a" }}>
-                💡 Demo OTP: <b>123456</b>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, marginBottom: 8, fontWeight: 800 }}>Verify Mobile</div>
+              <div style={{ fontSize: 12, color: "#92400e", marginBottom: 20, background: "#fffbeb", padding: "10px 14px", borderRadius: 10, border: "1px solid #fde68a", display: "flex", alignItems: "center", gap: 8 }}>
+                <span>💡</span><span>Demo OTP: <b>123456</b></span>
               </div>
               <OtpInput value={otp} onChange={setOtp} />
               {err && <div className="err-box">⚠️ {err}</div>}
-              <button className="btn btn-red" style={{ width: "100%", padding: 12 }} onClick={step2}>Verify OTP →</button>
-              <button className="btn btn-ghost" style={{ width: "100%", marginTop: 8, fontSize: 12 }} onClick={() => setStep(1)}>← Back</button>
+              <button className="btn btn-red" style={{ width: "100%", padding: 13 }} onClick={step2}>Verify OTP →</button>
+              <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10, fontSize: 12 }} onClick={() => setStep(1)}>← Back</button>
             </div>
           )}
 
-          {/* Step 3 — Password (with eye toggle) */}
+          {/* Step 3 — Password */}
           {step === 3 && (
             <div className="fi">
-              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 21, color: C.redDark, marginBottom: 18 }}>Set Password</div>
-              <div style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, marginBottom: 20, fontWeight: 800 }}>Set Password</div>
+              <div style={{ marginBottom: 14 }}>
                 <Lbl>Password</Lbl>
                 <div style={{ position: "relative" }}>
                   <input className="inp" type={showPass ? "text" : "password"} placeholder="Min 6 characters"
@@ -174,7 +205,7 @@ export function SignupScreen({ onDone }) {
                   </button>
                 </div>
               </div>
-              <div style={{ marginBottom: 18 }}>
+              <div style={{ marginBottom: 20 }}>
                 <Lbl>Confirm Password</Lbl>
                 <div style={{ position: "relative" }}>
                   <input className="inp" type={showConf ? "text" : "password"} placeholder="Re-enter password"
@@ -185,7 +216,7 @@ export function SignupScreen({ onDone }) {
                   </button>
                 </div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18, padding: "12px 14px", background: "#fff8f8", borderRadius: 10, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, padding: "12px 14px", background: "#fff8f0", borderRadius: 12, border: `1px solid ${C.border}` }}>
                 <label className="toggle">
                   <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
                   <span className="toggle-slider" />
@@ -193,8 +224,8 @@ export function SignupScreen({ onDone }) {
                 <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Remember me for 1 month</div>
               </div>
               {err && <div className="err-box">⚠️ {err}</div>}
-              <button className="btn btn-red" style={{ width: "100%", padding: 12 }} onClick={step3} disabled={loading}>
-                {loading ? <><Spin /> Creating...</> : "🎉 Create Account"}
+              <button className="btn btn-red" style={{ width: "100%", padding: 13 }} onClick={step3} disabled={loading}>
+                {loading ? <><Spin /> Creating Account...</> : "Create Account"}
               </button>
             </div>
           )}
@@ -231,24 +262,33 @@ export function SigninScreen({ onLogin, onSignup }) {
   }
 
   return (
-    <div className="auth-wrap"><style>{CSS}</style>
-      <div className="auth-left">
-        <div style={{ textAlign: "center" }}>
-          <img src="/logo.png" alt="logo" style={{ width: 200, filter: "drop-shadow(0 4px 20px rgba(0,0,0,0.35))", marginBottom: 20 }} />
-          <div style={{ width: 50, height: 3, background: C.yellow, borderRadius: 2, margin: "0 auto 18px" }} />
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", lineHeight: 1.9 }}>
-            🏭 Manufacturing · Distribution<br />📦 Inventory · Billing<br />🚚 Delivery Management
-          </div>
-          <div style={{ marginTop: 28, fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "1px" }}>SAURASHTRA · GUJARAT · INDIA</div>
+    <div className="auth-ice-wrap"><style>{CSS + AUTH_CSS}</style>
+      <div className="auth-ice-left">
+        <div style={{ textAlign: "center", position: "relative", zIndex: 1 }}>
+          <img
+            src="/logo.png" alt="Vrundavan Ice Cream"
+            style={{ width: 180, filter: "drop-shadow(0 6px 24px rgba(0,0,0,0.4))", marginBottom: 18 }}
+            onError={e => { e.target.style.display = "none"; }}
+          />
+          <div style={{ width: 40, height: 2, background: "rgba(245,197,24,0.6)", borderRadius: 2, margin: "0 auto 20px" }} />
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", fontWeight: 600, letterSpacing: "1px", textTransform: "uppercase", marginBottom: 16 }}>Business Management Portal</div>
+          <ul className="feat-list">
+            <li>Manufacturing &amp; Production</li>
+            <li>Distribution &amp; Delivery</li>
+            <li>Inventory Management</li>
+            <li>Billing &amp; Invoicing</li>
+            <li>Agency Tracking</li>
+          </ul>
+          <div style={{ marginTop: 32, fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "2px", textTransform: "uppercase" }}>KALAVAD · GUJARAT · INDIA</div>
         </div>
       </div>
 
-      <div className="auth-right">
-        <div className="auth-card su">
-          <div style={{ textAlign: "center", marginBottom: 26 }}>
-            <Logo size={50} showText={false} />
-            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 23, color: C.redDark, marginTop: 10 }}>Welcome Back</div>
-            <div style={{ fontSize: 13, color: C.textLight, marginTop: 3 }}>Sign in to your account</div>
+      <div className="auth-ice-right">
+        <div className="auth-ice-card su">
+          <div style={{ textAlign: "center", marginBottom: 30 }}>
+            <div style={{ width: 64, height: 64, borderRadius: "50%", background: "linear-gradient(135deg,#fff8f0,#fce7f3)", border: "2px solid #f0dada", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, margin: "0 auto 14px", boxShadow: "0 4px 16px rgba(200,24,30,0.12)" }}>🍦</div>
+            <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: C.redDark, fontWeight: 800 }}>Welcome Back</div>
+            <div style={{ fontSize: 13, color: C.textLight, marginTop: 4 }}>Sign in to manage Vrundavan Ice Cream</div>
           </div>
 
           <div style={{ marginBottom: 14 }}>
@@ -258,7 +298,7 @@ export function SigninScreen({ onLogin, onSignup }) {
               onKeyDown={e => e.key === "Enter" && doLogin()} />
           </div>
 
-          <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 20 }}>
             <Lbl>Password</Lbl>
             <div style={{ position: "relative" }}>
               <input className="inp" type={showPass ? "text" : "password"} placeholder="Your password"
@@ -271,7 +311,7 @@ export function SigninScreen({ onLogin, onSignup }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, padding: "12px 14px", background: "#fff8f8", borderRadius: 10, border: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22, padding: "12px 16px", background: "#fff8f0", borderRadius: 12, border: `1px solid ${C.border}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <label className="toggle">
                 <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
@@ -279,18 +319,26 @@ export function SigninScreen({ onLogin, onSignup }) {
               </label>
               <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Remember me</span>
             </div>
-            <span style={{ fontSize: 12, color: C.red, cursor: "pointer", fontWeight: 700 }}>Forgot?</span>
+            <span style={{ fontSize: 12, color: C.red, cursor: "pointer", fontWeight: 700 }}>Forgot password?</span>
           </div>
 
           {err && <div className="err-box">⚠️ {err}</div>}
 
-          <button className="btn btn-red" style={{ width: "100%", padding: 13, fontSize: 15 }} onClick={doLogin} disabled={loading}>
+          <button className="btn btn-red" style={{ width: "100%", padding: 14, fontSize: 15, borderRadius: 14, letterSpacing: "0.3px" }} onClick={doLogin} disabled={loading}>
             {loading ? <span className="pulse">Signing in...</span> : "Sign In →"}
           </button>
 
-          <div style={{ textAlign: "center", marginTop: 14, fontSize: 13, color: C.textLight }}>
-            New staff?{" "}
+          <div style={{ textAlign: "center", marginTop: 18, fontSize: 13, color: C.textLight }}>
+            New staff member?{" "}
             <span style={{ color: C.red, fontWeight: 700, cursor: "pointer" }} onClick={onSignup}>Create Account</span>
+          </div>
+
+          <div style={{ marginTop: 28, paddingTop: 18, borderTop: `1px solid ${C.border}`, textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 24, flexWrap: "wrap" }}>
+              {["Manufacturing", "Distribution", "Inventory", "Billing"].map(f => (
+                <div key={f} style={{ fontSize: 10, color: C.textLight, fontWeight: 600, letterSpacing: "0.5px" }}>{f}</div>
+              ))}
+            </div>
           </div>
         </div>
       </div>

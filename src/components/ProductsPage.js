@@ -5,30 +5,26 @@ import { db } from "../firebase";
 import { C } from "../constants";
 import { Lbl, Modal, Spin, PageHeader } from "./UI";
 
-// ── Add / Edit Product Modal ──────────────────────────────────────────────────
+const DEFAULT_DISCOUNT = 14;
+
 function ProductModal({ existing, onClose }) {
-  const [name,    setName]    = useState(existing?.name    || "");
-  const [rate,    setRate]    = useState(existing?.rate    ? String(existing.rate) : "");
-  const [loading, setLoading] = useState(false);
-  const [err,     setErr]     = useState("");
+  const [name,     setName]     = useState(existing?.name    || "");
+  const [rate,     setRate]     = useState(existing?.rate    ? String(existing.rate)     : "");
+  const [discount, setDiscount] = useState(existing?.discount != null ? String(existing.discount) : String(DEFAULT_DISCOUNT));
+  const [loading,  setLoading]  = useState(false);
+  const [err,      setErr]      = useState("");
 
   async function handleSave() {
     if (!name.trim())               return setErr("Product name is required.");
     if (!rate || Number(rate) <= 0) return setErr("Enter a valid rate.");
+    const discVal = Number(discount);
+    if (isNaN(discVal) || discVal < 0 || discVal > 100) return setErr("Discount must be 0–100.");
     setLoading(true); setErr("");
     try {
       if (existing) {
-        await updateDoc(doc(db, "products", existing.id), {
-          name:      name.trim(),
-          rate:      Number(rate),
-          updatedAt: serverTimestamp(),
-        });
+        await updateDoc(doc(db, "products", existing.id), { name: name.trim(), rate: Number(rate), discount: discVal, updatedAt: serverTimestamp() });
       } else {
-        await addDoc(collection(db, "products"), {
-          name:      name.trim(),
-          rate:      Number(rate),
-          createdAt: serverTimestamp(),
-        });
+        await addDoc(collection(db, "products"), { name: name.trim(), rate: Number(rate), discount: discVal, createdAt: serverTimestamp() });
       }
       onClose();
     } catch (e) { setErr("Failed to save. Try again."); setLoading(false); }
@@ -41,10 +37,17 @@ function ProductModal({ existing, onClose }) {
         <input className="inp" placeholder="e.g. 05.MINI CHOCOBAR [1*30]"
           value={name} onChange={e => { setName(e.target.value); setErr(""); }} />
       </div>
-      <div style={{ marginBottom: 18 }}>
-        <Lbl>Rate (Rs. per box) *</Lbl>
-        <input className="inp" type="number" min="1" placeholder="e.g. 127"
-          value={rate} onChange={e => { setRate(e.target.value); setErr(""); }} />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
+        <div>
+          <Lbl>Rate (Rs. per box) *</Lbl>
+          <input className="inp" type="number" min="1" placeholder="e.g. 127"
+            value={rate} onChange={e => { setRate(e.target.value); setErr(""); }} />
+        </div>
+        <div>
+          <Lbl>Discount % (default 14)</Lbl>
+          <input className="inp" type="number" min="0" max="100" step="0.01" placeholder="14"
+            value={discount} onChange={e => { setDiscount(e.target.value); setErr(""); }} />
+        </div>
       </div>
       {err && <div className="err-box">⚠️ {err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
@@ -57,37 +60,19 @@ function ProductModal({ existing, onClose }) {
   );
 }
 
-// ── Inline Delete Confirmation Modal ─────────────────────────────────────────
-// Replaces window.confirm which can be blocked by browsers.
 function DeleteConfirmModal({ product, onConfirm, onCancel, loading }) {
   return (
     <div className="mo" onClick={e => { if (e.target.className === "mo") onCancel(); }}>
       <div className="mbox su" style={{ width: 400, textAlign: "center" }}>
         <div style={{ fontSize: 44, marginBottom: 12 }}>🗑️</div>
-        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: C.redDark, fontWeight: 800, marginBottom: 8 }}>
-          Delete Product?
-        </div>
-        <div style={{ background: "#fff0f0", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", marginBottom: 6, fontSize: 13, fontWeight: 700, color: C.text }}>
-          {product.name}
-        </div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 18, color: C.redDark, fontWeight: 800, marginBottom: 8 }}>Delete Product?</div>
+        <div style={{ background: "#fff0f0", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 16px", marginBottom: 6, fontSize: 13, fontWeight: 700, color: C.text }}>{product.name}</div>
         <div style={{ fontSize: 12, color: C.textLight, marginBottom: 20 }}>
-          Rate: Rs. {(product.rate || 0).toLocaleString()} &nbsp;·&nbsp; This cannot be undone.
+          Rate: Rs. {(product.rate || 0).toLocaleString()} &nbsp;·&nbsp; Disc: {product.discount ?? DEFAULT_DISCOUNT}% &nbsp;·&nbsp; This cannot be undone.
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button
-            className="btn btn-ghost"
-            style={{ flex: 1, fontSize: 13 }}
-            onClick={onCancel}
-            disabled={loading}
-          >
-            Cancel
-          </button>
-          <button
-            className="btn btn-red"
-            style={{ flex: 1, fontSize: 13, background: "#dc2626" }}
-            onClick={onConfirm}
-            disabled={loading}
-          >
+          <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onCancel} disabled={loading}>Cancel</button>
+          <button className="btn btn-red" style={{ flex: 1, background: "#dc2626" }} onClick={onConfirm} disabled={loading}>
             {loading ? <><Spin /> Deleting...</> : "Yes, Delete"}
           </button>
         </div>
@@ -96,71 +81,43 @@ function DeleteConfirmModal({ product, onConfirm, onCancel, loading }) {
   );
 }
 
-// ── Products Page ─────────────────────────────────────────────────────────────
-// All users (staff + owner) can add, edit, delete products.
 export function ProductsPage({ products }) {
   const [search,       setSearch]       = useState("");
-  const [modal,        setModal]        = useState(null);    // null | "add" | product-object
-  const [deleteTarget, setDeleteTarget] = useState(null);    // product to delete
+  const [modal,        setModal]        = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [delLoading,   setDelLoading]   = useState(false);
 
   const filtered = products.filter(p =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    String(p.rate).includes(search)
+    p.name.toLowerCase().includes(search.toLowerCase()) || String(p.rate).includes(search)
   );
 
   async function doDelete() {
     if (!deleteTarget) return;
     setDelLoading(true);
-    try {
-      await deleteDoc(doc(db, "products", deleteTarget.id));
-      setDeleteTarget(null);
-    } catch (e) {
-      alert("Failed to delete. Please try again.");
-    }
+    try { await deleteDoc(doc(db, "products", deleteTarget.id)); setDeleteTarget(null); }
+    catch (e) { alert("Failed to delete. Please try again."); }
     setDelLoading(false);
   }
 
   return (
     <div className="fi">
-      {/* Add / Edit modal */}
       {modal === "add"          && <ProductModal existing={null}  onClose={() => setModal(null)} />}
       {modal && modal !== "add" && <ProductModal existing={modal} onClose={() => setModal(null)} />}
-
-      {/* Inline delete confirmation */}
-      {deleteTarget && (
-        <DeleteConfirmModal
-          product={deleteTarget}
-          onConfirm={doDelete}
-          onCancel={() => setDeleteTarget(null)}
-          loading={delLoading}
-        />
-      )}
+      {deleteTarget && <DeleteConfirmModal product={deleteTarget} onConfirm={doDelete} onCancel={() => setDeleteTarget(null)} loading={delLoading} />}
 
       <div className="page-header-sticky">
         <PageHeader
           title="Product Master 📦"
-          sub={`${products.length} products · rates used in billing`}
-          action={
-            <button className="btn btn-red" onClick={() => setModal("add")}>
-              + Add Product
-            </button>
-          }
+          sub={`${products.length} products · rates & discounts used in billing`}
+          action={<button className="btn btn-red" onClick={() => setModal("add")}>+ Add Product</button>}
         />
       </div>
 
-      {/* Search */}
       <div style={{ marginBottom: 16 }}>
-        <input
-          className="inp"
-          placeholder="🔍 Search by name or rate..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={{ maxWidth: 380 }}
-        />
+        <input className="inp" placeholder="🔍 Search by name or rate..." value={search}
+          onChange={e => setSearch(e.target.value)} style={{ maxWidth: 380 }} />
       </div>
 
-      {/* Stats */}
       <div style={{ display: "flex", gap: 12, marginBottom: 18 }}>
         {[
           { label: "Total Products", value: products.length, bg: "#fff0f0", color: C.redDark },
@@ -177,59 +134,25 @@ export function ProductsPage({ products }) {
         <div className="empty-state card">
           <div className="icon">📦</div>
           <p>{search ? `No products matching "${search}"` : "No products yet."}</p>
-          {!search && (
-            <button className="btn btn-red" style={{ marginTop: 10 }} onClick={() => setModal("add")}>
-              + Add First Product
-            </button>
-          )}
+          {!search && <button className="btn btn-red" style={{ marginTop: 10 }} onClick={() => setModal("add")}>+ Add First Product</button>}
         </div>
       ) : (
         <div className="card" style={{ padding: 0 }}>
-          {/* Table header */}
-          <div className="mobile-product-hide" style={{
-            display: "grid",
-            gridTemplateColumns: "40px 1fr 120px 80px 90px",
-            gap: 8, padding: "10px 16px",
-            background: "#fff8f8",
-            borderRadius: "14px 14px 0 0",
-            borderBottom: `1px solid ${C.border}`,
-          }}>
-            {["#", "Product Name", "Rate (Rs.)", "Edit", "Delete"].map((h, i) => (
+          <div className="mobile-product-hide" style={{ display: "grid", gridTemplateColumns: "40px 1fr 110px 90px 80px 90px", gap: 8, padding: "10px 16px", background: "#fff8f8", borderRadius: "14px 14px 0 0", borderBottom: `1px solid ${C.border}` }}>
+            {["#", "Product Name", "Rate (Rs.)", "Disc %", "Edit", "Delete"].map((h, i) => (
               <div key={i} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
             ))}
           </div>
-
-          {/* Product rows */}
           {filtered.map((p, i) => (
-            <div
-              key={p.id}
-              className="tr mobile-product-row"
-              style={{ display: "grid", gridTemplateColumns: "40px 1fr 120px 80px 90px", gap: 8, alignItems: "center" }}
-            >
+            <div key={p.id} className="tr mobile-product-row"
+              style={{ display: "grid", gridTemplateColumns: "40px 1fr 110px 90px 80px 90px", gap: 8, alignItems: "center" }}>
               <div style={{ fontSize: 11, color: C.textLight, fontWeight: 700 }}>{i + 1}</div>
-
               <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{p.name}</div>
-
-              <div style={{ fontSize: 14, fontWeight: 800, color: C.redDark }}>
-                Rs. {(p.rate || 0).toLocaleString()}
-              </div>
-
+              <div style={{ fontSize: 14, fontWeight: 800, color: C.redDark }}>Rs. {(p.rate || 0).toLocaleString()}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#065f46" }}>{p.discount ?? DEFAULT_DISCOUNT}%</div>
               <div className="mobile-product-actions" style={{ display: "contents" }}>
-                <button
-                  className="btn btn-ghost"
-                  style={{ fontSize: 12, padding: "6px 12px" }}
-                  onClick={() => setModal(p)}
-                >
-                  ✏️ Edit
-                </button>
-
-                <button
-                  className="btn btn-danger"
-                  style={{ fontSize: 12, padding: "6px 12px" }}
-                  onClick={() => setDeleteTarget(p)}
-                >
-                  🗑️ Delete
-                </button>
+                <button className="btn btn-ghost"  style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setModal(p)}>✏️ Edit</button>
+                <button className="btn btn-danger" style={{ fontSize: 12, padding: "6px 12px" }} onClick={() => setDeleteTarget(p)}>🗑️ Delete</button>
               </div>
             </div>
           ))}

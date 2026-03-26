@@ -121,17 +121,18 @@ body{font-family:'Nunito',sans-serif;}
 .hamburger{background:none;border:none;font-size:24px;color:#c8181e;cursor:pointer;}
 
 @media(max-width:768px){
-  /* Top Bar & Hamburger Header */
-  .mobile-header{display:flex;align-items:center;gap:12px;padding-bottom:14px;border-bottom:2px dashed #f0dada;margin-bottom:16px;}
-  
-  /* Sidebar Drawer styling replacing the bottom bar */
+  /* Top Bar & Hamburger Header — fixed at top of viewport */
+  .mobile-header{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:2px dashed #f0dada;position:fixed;top:0;left:0;right:0;width:100%;z-index:100;background:#fdf5f5;box-shadow:0 2px 8px rgba(200,24,30,0.06);}
+  /* Push content down to account for the fixed header height (~62px) */
+  .main-content{padding-top:70px!important;}
+
+  /* Sidebar Drawer */
   .drawer-overlay{display:block;position:fixed;inset:0;background:rgba(26,5,5,0.6);z-index:900;backdrop-filter:blur(3px);}
   .sidebar{position:fixed;top:0;left:0;bottom:0;width:260px;height:100vh;z-index:1000;transform:translateX(-100%);transition:transform 0.3s cubic-bezier(0.2,0.8,0.2,1);padding:24px 16px;}
   .drawer-open{transform:translateX(0);box-shadow:4px 0 24px rgba(0,0,0,0.4);}
   .ni{flex-direction:row;font-size:14px;padding:12px 14px;margin-bottom:6px;min-width:auto;text-align:left;}
   .brand-logo-wrap,.sidebar-footer{display:block;margin-bottom:20px;}
-  
-  .main-content{padding:16px 14px!important;}
+
   .auth-left{display:none;}
   .auth-card{padding:24px;}
   .stat-grid{grid-template-columns:1fr 1fr!important;}
@@ -193,8 +194,11 @@ body{font-family:'Nunito',sans-serif;}
   .mobile-product-row > div:nth-child(1){display:none;} /* hide # column */
   .mobile-product-row > div:nth-child(2){grid-column:1;grid-row:1;font-size:13px!important;font-weight:700!important;}
   .mobile-product-row > div:nth-child(3){grid-column:2;grid-row:1;text-align:right;}
+  .mobile-product-row > div:nth-child(4){display:none!important;} /* hide disc% col on mobile */
   .mobile-product-actions{grid-column:1 / 3!important;grid-row:2!important;display:flex!important;gap:8px!important;padding-top:10px!important;border-top:1px dashed #f0dada!important;}
   .mobile-product-actions .btn{flex:1!important;font-size:12px!important;padding:8px 12px!important;text-align:center!important;}
+  /* Compact controls row to fit disc% field in bill items */
+  .mobile-item-row-controls{display:flex!important;grid-column:1 / span 2;grid-row:2;gap:5px!important;align-items:center;background:#fef0f0;padding:8px 10px;border-radius:8px;}
 }
 @media(max-width:480px){.stat-grid{grid-template-columns:1fr!important;}}
 `;
