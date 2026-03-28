@@ -1,38 +1,53 @@
 // src/components/Settings.js
 import { useState, useEffect } from "react";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import {
+  doc, getDoc, setDoc, getDocs,
+  collection, writeBatch, serverTimestamp,
+} from "firebase/firestore";
 import { db } from "../firebase";
-import { C } from "../constants";
+import { C, ITEM_CATALOG } from "../constants";
 import { PageHeader, Spin, Lbl } from "./UI";
 
 export function SettingsPage({ currentUser }) {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
+  const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [msg, setMsg]         = useState({ text: "", type: "" });
+  const [msg, setMsg] = useState({ text: "", type: "" });
   const [showCode, setShowCode] = useState(false);
 
-  // States for each section
+  // Settings state
   const [signup, setSignup] = useState({ secretCode: "" });
-  const [biz, setBiz]       = useState({ companyName: "", address: "", phone: "", gstin: "" });
-  const [bank, setBank]     = useState({ bankName: "", accountNo: "", ifsc: "" });
+  const [biz, setBiz] = useState({ companyName: "", address: "", phone: "", gstin: "" });
+  const [bank, setBank] = useState({ bankName: "", accountNo: "", ifsc: "" });
 
   // Backup for cancel
   const [origSignup, setOrigSignup] = useState({});
-  const [origBiz, setOrigBiz]       = useState({});
-  const [origBank, setOrigBank]     = useState({});
+  const [origBiz, setOrigBiz] = useState({});
+  const [origBank, setOrigBank] = useState({});
+
+  // ── Product catalog management state ──────────────────────────────────────
+  const [prodCount, setProdCount] = useState(null);
+  const [seedFlag, setSeedFlag] = useState(null);  // productsSeedDone value
+  const [reseedLoading, setReseedLoading] = useState(false);
+  const [reseedMsg, setReseedMsg] = useState({ text: "", type: "" });
 
   useEffect(() => {
     async function fetchSettings() {
       try {
-        const [sG, bG, baG] = await Promise.all([
+        const [sG, bG, baG, appG] = await Promise.all([
           getDoc(doc(db, "settings", "signup")),
           getDoc(doc(db, "settings", "business")),
-          getDoc(doc(db, "settings", "bank"))
+          getDoc(doc(db, "settings", "bank")),
+          getDoc(doc(db, "settings", "appConfig")),
         ]);
         if (sG.exists()) { setSignup(sG.data()); setOrigSignup(sG.data()); }
         if (bG.exists()) { setBiz(bG.data()); setOrigBiz(bG.data()); }
         if (baG.exists()) { setBank(baG.data()); setOrigBank(baG.data()); }
+        if (appG.exists()) { setSeedFlag(appG.data().productsSeedDone); }
+
+        // Count products
+        const prodSnap = await getDocs(collection(db, "products"));
+        setProdCount(prodSnap.size);
       } catch (e) {
         console.error("Error loading settings:", e);
         setMsg({ text: "Failed to load settings.", type: "err" });
@@ -63,9 +78,9 @@ export function SettingsPage({ currentUser }) {
     try {
       const meta = { updatedAt: serverTimestamp(), updatedBy: currentUser?.name || "Owner" };
       await Promise.all([
-        setDoc(doc(db, "settings", "signup"),   { ...signup, ...meta }),
+        setDoc(doc(db, "settings", "signup"), { ...signup, ...meta }),
         setDoc(doc(db, "settings", "business"), { ...biz, ...meta }),
-        setDoc(doc(db, "settings", "bank"),     { ...bank, ...meta }),
+        setDoc(doc(db, "settings", "bank"), { ...bank, ...meta }),
       ]);
       setOrigSignup({ ...signup });
       setOrigBiz({ ...biz });
@@ -78,6 +93,69 @@ export function SettingsPage({ currentUser }) {
       setMsg({ text: "Failed to save settings.", type: "err" });
     }
     setSaving(false);
+  }
+
+  // ── Re-seed products — owner only ─────────────────────────────────────────
+  // Step 1: Clears productsSeedDone and cleanedDuplicates flags in appConfig.
+  // Step 2: Deletes ALL existing products from Firestore.
+  // Step 3: Re-seeds all 216 items from ITEM_CATALOG fresh.
+  // After this, the Dashboard listener will NOT auto-seed again (flags are reset
+  // and re-set after seeding completes here directly).
+  async function handleReseed() {
+    if (!window.confirm(
+      `This will DELETE all ${prodCount} existing products and re-seed ${ITEM_CATALOG.length} items from the default catalog.\n\nAny custom products or rate edits will be lost.\n\nAre you sure?`
+    )) return;
+
+    setReseedLoading(true);
+    setReseedMsg({ text: "", type: "" });
+
+    try {
+      // Step 1: Delete all existing products in batches
+      const prodSnap = await getDocs(collection(db, "products"));
+      const BATCH_SIZE = 400;
+      const allIds = prodSnap.docs.map(d => d.id);
+
+      for (let i = 0; i < allIds.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        allIds.slice(i, i + BATCH_SIZE).forEach(id => {
+          batch.delete(doc(db, "products", id));
+        });
+        await batch.commit();
+      }
+
+      // Step 2: Re-seed from ITEM_CATALOG in batches
+      for (let i = 0; i < ITEM_CATALOG.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        ITEM_CATALOG.slice(i, i + BATCH_SIZE).forEach(item => {
+          const ref = doc(collection(db, "products"));
+          batch.set(ref, {
+            name: item.name,
+            rate: item.rate,
+            discount: 14,
+            createdAt: serverTimestamp(),
+          });
+        });
+        await batch.commit();
+      }
+
+      // Step 3: Update flags — marks as seeded and cleaned so Dashboard
+      // listener does not try to run cleanup or seed again
+      await setDoc(doc(db, "settings", "appConfig"), {
+        productsSeedDone: true,
+        cleanedDuplicates: true,
+        reseededAt: serverTimestamp(),
+        reseededBy: currentUser?.name || "Owner",
+      });
+
+      // Update local state
+      setProdCount(ITEM_CATALOG.length);
+      setSeedFlag(true);
+      setReseedMsg({ text: `✅ Successfully re-seeded ${ITEM_CATALOG.length} products from default catalog.`, type: "ok" });
+    } catch (e) {
+      console.error("Re-seed failed:", e);
+      setReseedMsg({ text: "❌ Re-seed failed. Please try again.", type: "err" });
+    }
+    setReseedLoading(false);
   }
 
   if (loading) {
@@ -122,22 +200,22 @@ export function SettingsPage({ currentUser }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, maxWidth: 640 }}>
-        
-        {/* Signup Code */}
+
+        {/* ── Signup Code ── */}
         <div className="card">
           <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>🔐 Signup Secret Code</div>
           <div style={{ fontSize: 13, color: C.textLight, marginBottom: 14 }}>Code required for new staff to create an account.</div>
-          
+
           {editing ? (
             <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
               <div style={{ flex: 1, position: "relative" }}>
                 <Lbl>Secret Code</Lbl>
-                <input 
-                  className="inp" 
-                  type={showCode ? "text" : "password"} 
-                  value={signup.secretCode} 
-                  onChange={e => setSignup({ ...signup, secretCode: e.target.value })} 
-                  placeholder="e.g. VRUNDAVAN2026" 
+                <input
+                  className="inp"
+                  type={showCode ? "text" : "password"}
+                  value={signup.secretCode}
+                  onChange={e => setSignup({ ...signup, secretCode: e.target.value })}
+                  placeholder="e.g. VRUNDAVAN2026"
                   style={{ paddingRight: 40 }}
                 />
                 <button onClick={() => setShowCode(!showCode)} style={{ position: "absolute", right: 12, top: "60%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>
@@ -150,11 +228,11 @@ export function SettingsPage({ currentUser }) {
           )}
         </div>
 
-        {/* Business Info */}
+        {/* ── Business Info ── */}
         <div className="card">
           <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>🏢 Business Information</div>
           <div style={{ fontSize: 13, color: C.textLight, marginBottom: 14 }}>Printed on the header of all invoices.</div>
-          
+
           {editing ? (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 12, marginBottom: 12 }}>
@@ -186,11 +264,11 @@ export function SettingsPage({ currentUser }) {
           )}
         </div>
 
-        {/* Bank Details */}
+        {/* ── Bank Details ── */}
         <div className="card">
           <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>🏦 Bank Details</div>
           <div style={{ fontSize: 13, color: C.textLight, marginBottom: 14 }}>Printed on the footer of invoices and WhatsApp messages.</div>
-          
+
           {editing ? (
             <>
               <div style={{ marginBottom: 12 }}>
@@ -215,6 +293,56 @@ export function SettingsPage({ currentUser }) {
               <InfoRow label="IFSC Code" value={bank.ifsc} />
             </>
           )}
+        </div>
+
+        {/* ── Product Catalog Management — Owner only ── */}
+        <div className="card" style={{ borderLeft: `4px solid ${C.yellow}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>📦 Product Catalog Management</div>
+          <div style={{ fontSize: 13, color: C.textLight, marginBottom: 16 }}>
+            Manage the default product catalog. Use re-seed only if products are corrupted or missing.
+          </div>
+
+          {/* Status row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+            <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
+              <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Products in Database</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.redDark }}>
+                {prodCount === null ? <Spin /> : prodCount}
+              </div>
+            </div>
+            <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
+              <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Catalog Status</div>
+              <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>
+                {seedFlag === true
+                  ? <span style={{ color: "#065f46" }}>✅ Seeded & Protected</span>
+                  : <span style={{ color: "#d97706" }}>⚠️ Not yet protected</span>
+                }
+              </div>
+            </div>
+          </div>
+
+          {/* Info box */}
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#92400e" }}>
+            <strong>⚠️ Warning:</strong> Re-seeding will permanently delete all {prodCount} existing products and replace them with {ITEM_CATALOG.length} default catalog items. Any custom products or rate changes you made will be lost.
+          </div>
+
+          {reseedMsg.text && (
+            <div className={reseedMsg.type === "err" ? "err-box" : "ok-box"} style={{ marginBottom: 12 }}>
+              {reseedMsg.text}
+            </div>
+          )}
+
+          <button
+            className="btn btn-danger"
+            style={{ fontSize: 13, padding: "10px 20px" }}
+            onClick={handleReseed}
+            disabled={reseedLoading}
+          >
+            {reseedLoading
+              ? <><Spin /> Re-seeding ({ITEM_CATALOG.length} items)...</>
+              : `🔄 Re-seed from Default Catalog (${ITEM_CATALOG.length} items)`
+            }
+          </button>
         </div>
 
       </div>

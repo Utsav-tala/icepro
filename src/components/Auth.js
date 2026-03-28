@@ -33,23 +33,23 @@ const AUTH_CSS = `
 
 // ── SIGN UP ───────────────────────────────────────────────────────────────────
 export function SignupScreen({ onDone }) {
-  const [step, setStep]       = useState(1);
-  const [form, setForm]       = useState({ firstName:"", lastName:"", username:"", mobile:"", email:"", secretCode:"", password:"", confirm:"" });
-  const [otp, setOtp]         = useState("");
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState({ firstName: "", lastName: "", username: "", mobile: "", email: "", secretCode: "", password: "", confirm: "" });
+  const [otp, setOtp] = useState("");
   const [remember, setRemember] = useState(false);
-  const [err, setErr]         = useState("");
+  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showPass, setShowPass]   = useState(false);
-  const [showConf, setShowConf]   = useState(false);
+  const [showPass, setShowPass] = useState(false);
+  const [showConf, setShowConf] = useState(false);
 
   const upd = (f, v) => { setForm(p => ({ ...p, [f]: v })); setErr(""); };
 
   async function step1() {
-    if (!form.firstName.trim())                      return setErr("Enter your first name.");
-    if (!form.username.trim())                       return setErr("Enter a username.");
-    if (!/^\S+@\S+\.\S+/.test(form.email))          return setErr("Enter a valid email.");
-    if (form.mobile.length < 10)                     return setErr("Enter a valid 10-digit mobile number.");
-    
+    if (!form.firstName.trim()) return setErr("Enter your first name.");
+    if (!form.username.trim()) return setErr("Enter a username.");
+    if (!/^\S+@\S+\.\S+/.test(form.email)) return setErr("Enter a valid email.");
+    if (form.mobile.length < 10) return setErr("Enter a valid 10-digit mobile number.");
+
     setLoading(true);
     try {
       const snap = await getDoc(doc(db, "settings", "signup"));
@@ -83,8 +83,8 @@ export function SignupScreen({ onDone }) {
   }
 
   async function step3() {
-    if (form.password.length < 6)          return setErr("Password must be at least 6 characters.");
-    if (form.password !== form.confirm)    return setErr("Passwords do not match.");
+    if (form.password.length < 6) return setErr("Password must be at least 6 characters.");
+    if (form.password !== form.confirm) return setErr("Passwords do not match.");
     setLoading(true); setErr("");
     try {
       const cred = await createUserWithEmailAndPassword(auth, form.email, form.password);
@@ -147,7 +147,7 @@ export function SignupScreen({ onDone }) {
               <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, marginBottom: 20, fontWeight: 800 }}>Create Account</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                 {F("First Name", "firstName", "text", "Utsav")}
-                {F("Last Name",  "lastName",  "text", "Tala")}
+                {F("Last Name", "lastName", "text", "Tala")}
               </div>
               <div style={{ marginBottom: 12 }}>{F("Username", "username", "text", "utsav_vrundavan")}</div>
               <div style={{ marginBottom: 12 }}>{F("Email", "email", "email", "utsav@gmail.com")}</div>
@@ -237,26 +237,26 @@ export function SignupScreen({ onDone }) {
 
 // ── SIGN IN ───────────────────────────────────────────────────────────────────
 export function SigninScreen({ onLogin, onSignup }) {
-  const [email, setEmail]       = useState("");
-  const [pass,  setPass]        = useState("");
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
   const [remember, setRemember] = useState(false);
-  const [err, setErr]           = useState("");
-  const [loading, setLoading]   = useState(false);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
   async function doLogin() {
     if (!email.trim()) return setErr("Enter your email.");
-    if (!pass)         return setErr("Enter your password.");
+    if (!pass) return setErr("Enter your password.");
     setLoading(true); setErr("");
     try {
       const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
       const snap = await getDoc(doc(db, "users", cred.user.uid));
-      const p    = snap.exists() ? snap.data() : {};
+      const p = snap.exists() ? snap.data() : {};
       onLogin({
-        uid:   cred.user.uid,
-        name:  p.firstName ? `${p.firstName} ${p.lastName}`.trim() : cred.user.email,
+        uid: cred.user.uid,
+        name: p.firstName ? `${p.firstName} ${p.lastName}`.trim() : cred.user.email,
         email: cred.user.email,
-        role:  p.role || "staff",
+        role: p.role || "staff",
       });
     } catch (e) { setErr(friendlyError(e.code)); setLoading(false); }
   }

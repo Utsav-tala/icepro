@@ -1,3 +1,4 @@
+
 // src/components/BillModal.js
 import { useState, useRef, useEffect } from "react";
 import { collection, addDoc, serverTimestamp } from "firebase/firestore";
@@ -20,6 +21,9 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   const [err,        setErr]        = useState("");
   const [saved,      setSaved]      = useState(null);
 
+  // ── Bill type: "gst" = VMP series (TAX INVOICE), "nongst" = GB series (INVOICE)
+  const [billType, setBillType] = useState("nongst");
+
   // Active search row state
   const [searchQ,   setSearchQ]   = useState("");
   const [dropOpen,  setDropOpen]  = useState(false);
@@ -27,7 +31,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   const [pickedItem,setPickedItem]= useState(null);
   const [qty,       setQty]       = useState("");
   const [rate,      setRate]      = useState("");
-  const [disc,      setDisc]      = useState("");   // per-product discount %
+  const [disc,      setDisc]      = useState("");
 
   const searchRef = useRef(null);
   const qtyRef    = useRef(null);
@@ -45,7 +49,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
     setSearchQ(prod.name);
     setPickedItem(prod);
     setRate(String(prod.rate));
-    setDisc(String(prod.discount ?? DEFAULT_DISC));  // auto-fill product's discount
+    setDisc(String(prod.discount ?? DEFAULT_DISC));
     setDropOpen(false);
     setDropIndex(-1);
     setTimeout(() => qtyRef.current?.focus(), 50);
@@ -104,13 +108,11 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   const totalDiscAmt = lockedItems.reduce((s, it) => s + (Number(it.qty) * Number(it.rate) * (Number(it.disc) || 0) / 100), 0);
   const billAmt      = grossTotal - totalDiscAmt;
 
-  // Live balance
   const rawBal      = agencyId ? computeBalance(agencyId, bills, payments) : 0;
   const prevBal     = rawBal > 0 ? rawBal : 0;
   const advanceUsed = rawBal < 0 ? Math.abs(rawBal) : 0;
   const grandTotal  = Math.max(0, billAmt + rawBal);
 
-  // Preview for active row
   const previewGross = pickedItem && qty ? Number(qty) * Number(rate) : 0;
   const previewAmt   = previewGross * (1 - (Number(disc) || 0) / 100);
 
@@ -119,10 +121,14 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
     if (lockedItems.length === 0) return setErr("Add at least one item.");
     if (billAmt === 0)            return setErr("Bill total cannot be Rs. 0.");
     setLoading(true);
+    setErr("");
     try {
-      const billNo = genInvNo();
+      // ── Generate bill number atomically — async Firestore transaction ──
+      const billNo = await genInvNo(billType);
+
       const ref = await addDoc(collection(db, "bills"), {
         billNo,
+        billType,                          // "gst" or "nongst" — saved permanently
         agencyId,
         agencyName:    agency?.name || "",
         items:         lockedItems,
@@ -139,19 +145,26 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
       });
 
       await addDoc(collection(db, "agencies", agencyId, "transactions"), {
-        type: "bill", billNo, billId: ref.id, amount: billAmt,
+        type: "bill", billNo, billId: ref.id, billType, amount: billAmt,
         prevBalance: prevBal, advanceUsed: advanceUsed,
         createdByName: currentUser?.name || "",
         createdAt: serverTimestamp(),
       });
 
       setSaved({
-        bill: { id: ref.id, billNo, agencyId, agencyName: agency?.name || "", items: lockedItems,
-          subtotal: grossTotal, discountAmt: totalDiscAmt, total: billAmt,
-          prevBalance: prevBal, advanceUsed, grandTotal, notes, createdByName: currentUser?.name || "" },
+        bill: {
+          id: ref.id, billNo, billType, agencyId, agencyName: agency?.name || "",
+          items: lockedItems, subtotal: grossTotal, discountAmt: totalDiscAmt,
+          total: billAmt, prevBalance: prevBal, advanceUsed, grandTotal,
+          notes, createdByName: currentUser?.name || "",
+        },
         agency,
       });
-    } catch (e) { setErr("Failed to save bill. Please try again."); setLoading(false); }
+    } catch (e) {
+      console.error(e);
+      setErr("Failed to save bill. Please try again.");
+      setLoading(false);
+    }
   }
 
   // ── Success screen ────────────────────────────────────────────────────────
@@ -160,7 +173,14 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
       <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
         <div style={{ fontSize: 56, marginBottom: 8 }}>🧾</div>
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: C.redDark, marginBottom: 4 }}>{saved.bill.billNo}</div>
-        <div style={{ fontSize: 14, color: C.textLight, marginBottom: 6 }}>{saved.bill.agencyName}</div>
+        <div style={{ fontSize: 14, color: C.textLight, marginBottom: 4 }}>{saved.bill.agencyName}</div>
+        {/* Bill type badge */}
+        <div style={{ marginBottom: 12 }}>
+          {saved.bill.billType === "gst"
+            ? <span style={{ background: "#ecfdf5", color: "#065f46", border: "1px solid #a7f3d0", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>✓ GST Invoice (TAX INVOICE)</span>
+            : <span style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>📄 Non-GST Invoice (INVOICE)</span>
+          }
+        </div>
         <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, textAlign: "left" }}>
           {saved.bill.discountAmt > 0 && (
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "#065f46" }}>
@@ -187,7 +207,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
         </div>
         <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Firestore</div>
         <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          <button className="btn btn-red"   style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => printInvoice(saved.bill, saved.agency, appSettings)}>��️ Print / PDF</button>
+          <button className="btn btn-red"   style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => printInvoice(saved.bill, saved.agency, appSettings)}>🖨️ Print / PDF</button>
           <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency, appSettings)}>💬 WhatsApp</button>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
         </div>
@@ -195,11 +215,59 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
     </Modal>
   );
 
-  // Column layout — desktop: Product | Qty | Rate | Disc% | Amount | ✕
+  // Column layout
   const COLS = "1fr 60px 80px 55px 95px 28px";
 
   return (
     <Modal title="🧾 Create New Bill" onClose={onClose} wide>
+
+      {/* ── Bill Type Toggle — GST / Non-GST ── */}
+      <div style={{ marginBottom: 18 }}>
+        <Lbl>Bill Type</Lbl>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {[
+            {
+              val: "nongst",
+              icon: "📄",
+              title: "Non-GST Bill",
+              sub: "Series: GB/25-26/XXXX",
+              desc: "Standard invoice without GST",
+              activeBg: "#eff6ff",
+              activeBorder: "#3b82f6",
+              activeColor: "#1e40af",
+            },
+            {
+              val: "gst",
+              icon: "🧾",
+              title: "GST Bill",
+              sub: "Series: VMP/25-26/XXXX",
+              desc: "Tax invoice with GSTIN",
+              activeBg: "#ecfdf5",
+              activeBorder: "#10b981",
+              activeColor: "#065f46",
+            },
+          ].map(opt => (
+            <div
+              key={opt.val}
+              onClick={() => { setBillType(opt.val); setErr(""); }}
+              style={{
+                padding: "14px 16px",
+                borderRadius: 12,
+                border: `2px solid ${billType === opt.val ? opt.activeBorder : C.border}`,
+                background: billType === opt.val ? opt.activeBg : "#fff",
+                cursor: "pointer",
+                transition: "all 0.15s",
+              }}
+            >
+              <div style={{ fontSize: 22, marginBottom: 4 }}>{opt.icon}</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: billType === opt.val ? opt.activeColor : C.text, marginBottom: 2 }}>{opt.title}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: billType === opt.val ? opt.activeBorder : C.textLight, marginBottom: 2 }}>{opt.sub}</div>
+              <div style={{ fontSize: 11, color: C.textLight }}>{opt.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Agency selector */}
       <div style={{ marginBottom: 14 }}>
         <Lbl>Select Agency *</Lbl>
@@ -362,7 +430,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
       {err && <div className="err-box">⚠️ {err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
         <button className="btn btn-red" style={{ flex: 1, padding: 12 }} onClick={handleSave} disabled={loading}>
-          {loading ? <><Spin /> Saving...</> : `💾 Create Bill${lockedItems.length > 0 ? ` (${lockedItems.length} items)` : ""}`}
+          {loading ? <><Spin /> Generating bill number...</> : `💾 Create Bill${lockedItems.length > 0 ? ` (${lockedItems.length} items)` : ""}`}
         </button>
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
       </div>

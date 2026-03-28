@@ -1,21 +1,73 @@
+import { doc, runTransaction } from "firebase/firestore";
+import { db } from "./firebase";
+
 export function friendlyError(code) {
   const map = {
-    "auth/email-already-in-use":   "This email is already registered.",
-    "auth/invalid-email":          "Invalid email address.",
-    "auth/weak-password":          "Password must be at least 6 characters.",
-    "auth/user-not-found":         "No account found with this email.",
-    "auth/wrong-password":         "Incorrect password.",
-    "auth/invalid-credential":     "Incorrect email or password.",
-    "auth/too-many-requests":      "Too many attempts. Please wait a few minutes.",
+    "auth/email-already-in-use": "This email is already registered.",
+    "auth/invalid-email": "Invalid email address.",
+    "auth/weak-password": "Password must be at least 6 characters.",
+    "auth/user-not-found": "No account found with this email.",
+    "auth/wrong-password": "Incorrect password.",
+    "auth/invalid-credential": "Incorrect email or password.",
+    "auth/too-many-requests": "Too many attempts. Please wait a few minutes.",
     "auth/network-request-failed": "Network error. Check your internet.",
   };
   return map[code] || "Something went wrong. Please try again.";
 }
 
-export function genInvNo() {
-  return `GB/${Math.floor(Math.random() * 9000) + 1000}`;
+// ── Financial year helper ─────────────────────────────────────────────────────
+// In India, FY runs April 1 → March 31.
+// April 2025 → March 2026 = "25-26"
+export function getCurrentFY() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1; // 1-based
+  const startYear = month >= 4 ? year : year - 1;
+  const endYear = startYear + 1;
+  return `${String(startYear).slice(-2)}-${String(endYear).slice(-2)}`;
 }
 
+// ── Generate invoice number — atomic, sequential, duplicate-proof ─────────────
+//
+// billType: "gst"    → VMP/25-26/0001  (TAX INVOICE)
+// billType: "nongst" → GB/25-26/0001   (INVOICE)
+//
+// Uses Firestore runTransaction to atomically read + increment the counter.
+// If financial year has changed (April 1 rollover), resets the counter to 1.
+// Stored in: settings/billCounter → { fy, gbCount, vmpCount }
+//
+export async function genInvNo(billType = "nongst") {
+  const fy = getCurrentFY();
+  const counterRef = doc(db, "settings", "billCounter");
+
+  const newNumber = await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(counterRef);
+    let data = snap.exists() ? snap.data() : { fy, gbCount: 0, vmpCount: 0 };
+
+    // If financial year rolled over, reset both counters
+    if (data.fy !== fy) {
+      data = { fy, gbCount: 0, vmpCount: 0 };
+    }
+
+    let newCount;
+    if (billType === "gst") {
+      newCount = (data.vmpCount || 0) + 1;
+      transaction.set(counterRef, { ...data, fy, vmpCount: newCount });
+    } else {
+      newCount = (data.gbCount || 0) + 1;
+      transaction.set(counterRef, { ...data, fy, gbCount: newCount });
+    }
+
+    return newCount;
+  });
+
+  // Format: VMP/25-26/0001 or GB/25-26/0001
+  const prefix = billType === "gst" ? "VMP" : "GB";
+  const padded = String(newNumber).padStart(4, "0");
+  return `${prefix}/${fy}/${padded}`;
+}
+
+// ── Balance helpers ───────────────────────────────────────────────────────────
 export function computeBalance(agencyId, bills, payments) {
   const billed = bills
     .filter(b => b.agencyId === agencyId)
@@ -27,28 +79,28 @@ export function computeBalance(agencyId, bills, payments) {
 }
 
 export function balanceDisplay(bal) {
-  if (bal > 0)  return { label: "Outstanding",    color: "#c8181e", display: `-Rs.${bal.toLocaleString()}` };
-  if (bal < 0)  return { label: "Advance Credit", color: "#065f46", display: `+Rs.${Math.abs(bal).toLocaleString()}` };
-  return              { label: "Settled",         color: "#065f46", display: "Rs.0" };
+  if (bal > 0) return { label: "Outstanding", color: "#c8181e", display: `-Rs.${bal.toLocaleString()}` };
+  if (bal < 0) return { label: "Advance Credit", color: "#065f46", display: `+Rs.${Math.abs(bal).toLocaleString()}` };
+  return { label: "Settled", color: "#065f46", display: "Rs.0" };
 }
 
 export function toWords(n) {
-  const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine","Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"];
-  const tens  = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
+  const tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
   if (!n || n === 0) return "Zero Only";
   function chunk(num) {
     if (num === 0) return "";
-    if (num < 20)  return ones[num] + " ";
+    if (num < 20) return ones[num] + " ";
     return tens[Math.floor(num / 10)] + (num % 10 ? " " + ones[num % 10] + " " : " ");
   }
-  const amt     = Math.round(n * 100) / 100;
+  const amt = Math.round(n * 100) / 100;
   const intPart = Math.floor(amt);
   const decPart = Math.round((amt - intPart) * 100);
   let w = "";
   if (intPart >= 10000000) w += chunk(Math.floor(intPart / 10000000)) + "Crore ";
-  if (intPart >= 100000)   w += chunk(Math.floor((intPart % 10000000) / 100000)) + "Lakh ";
-  if (intPart >= 1000)     w += chunk(Math.floor((intPart % 100000) / 1000)) + "Thousand ";
-  if (intPart >= 100)      w += chunk(Math.floor((intPart % 1000) / 100)) + "Hundred ";
+  if (intPart >= 100000) w += chunk(Math.floor((intPart % 10000000) / 100000)) + "Lakh ";
+  if (intPart >= 1000) w += chunk(Math.floor((intPart % 100000) / 1000)) + "Thousand ";
+  if (intPart >= 100) w += chunk(Math.floor((intPart % 1000) / 100)) + "Hundred ";
   w += chunk(intPart % 100);
   if (decPart > 0) w += `And ${decPart}/100 Paise`;
   return w.trim() + " Only";
@@ -57,45 +109,39 @@ export function toWords(n) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PRINT INVOICE
 //
-// Page capacity (verified against Chrome print with URL bar + page numbers):
-//   Chrome eats ~70px top + ~40px bottom = ~110px overhead per print page.
-//   A4 at 96dpi = 1123px. Usable ≈ 1123 - 110 = ~1013px.
-//   (Conservative estimate used: ~920px to be safe with any margin settings.)
+// billType: "gst"    → TAX INVOICE  (shows GST column, GSTIN, VMP series)
+// billType: "nongst" → INVOICE      (hides GST column, no GSTIN, GB series)
 //
-//   Page 1 fixed overhead:
-//     co-header ~85px + inv-bar ~22px + bill-grid ~80px + table-head ~19px = 206px
-//   Footer fixed overhead:
-//     bank-row ~60px + prevbal ~35px + words ~25px + note/grand ~44px + terms/sign ~90px = 254px
+// Page capacity (verified against Chrome print with URL bar + page numbers):
+//   A4 at 96dpi = 1123px. Usable ≈ ~920px (conservative, safe with any margins).
+//   Page 1 fixed overhead: co-header ~85px + inv-bar ~22px + bill-grid ~80px
+//     + table-head ~19px = 206px
+//   Footer fixed overhead: ~254px
 //   Available for item rows on page 1: 920 - 206 - 254 = 460px → 460/20 = 23 rows
 //   ROWS_P1 = 20  (3 row safety buffer)
-//
-//   Continuation page fixed overhead:
-//     co-header ~85px + cont-bar ~22px + table-head ~19px = 126px
-//   Available for rows: 920 - 126 - 254 = 540px → 540/20 = 27 rows
+//   Continuation page: 920 - 126 - 254 = 540px → 540/20 = 27 rows
 //   ROWS_CONT = 24 (3 row safety buffer)
-//
-//   Example: 36 items → page 1: items 1-20 (no footer), page 2: items 21-36
-//            (16 items + 8 blank rows + footer) → EXACTLY 2 PDF pages ✓
-//   Example:  2 items → page 1: 2 items + 18 blank rows + footer → 1 PDF page ✓
 // ─────────────────────────────────────────────────────────────────────────────
 export function printInvoice(bill, agency, settings) {
-  const items      = bill.items || [];
-  const subtotal   = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
-  const discAmt    = Number(bill.discountAmt) || 0;
-  const discPct    = subtotal > 0 ? ((discAmt / subtotal) * 100).toFixed(2) : "0.00";
-  const billAmt    = subtotal - discAmt;
-  const prevBal    = Number(bill.prevBalance) || 0;
-  const advUsed    = Number(bill.advanceUsed) || 0;
+  // billType saved on the bill doc; fall back to "nongst" for old bills
+  const billType = bill.billType || "nongst";
+  const isGST = billType === "gst";
+
+  const items = bill.items || [];
+  const subtotal = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
+  const discAmt = Number(bill.discountAmt) || 0;
+  const discPct = subtotal > 0 ? ((discAmt / subtotal) * 100).toFixed(2) : "0.00";
+  const billAmt = subtotal - discAmt;
+  const prevBal = Number(bill.prevBalance) || 0;
+  const advUsed = Number(bill.advanceUsed) || 0;
   const grandTotal = Math.max(0, billAmt + prevBal - advUsed);
-  const totalQty   = items.reduce((s, it) => s + Number(it.qty || 0), 0);
-  const dateStr    = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN", { day:"2-digit", month:"2-digit", year:"numeric" })
-                     || new Date().toLocaleDateString("en-IN", { day:"2-digit", month:"2-digit", year:"numeric" });
+  const totalQty = items.reduce((s, it) => s + Number(it.qty || 0), 0);
+  const dateStr = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" })
+    || new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
 
-  // ── Row capacity (see comment block above for math) ───────────────────────
-  const ROWS_P1   = 20;   // items that fit on page 1 alongside footer
-  const ROWS_CONT = 24;   // items that fit on continuation pages alongside footer
+  const ROWS_P1 = 20;
+  const ROWS_CONT = 24;
 
-  // Fill page 1 first, then continuation pages (no even split)
   const pages = [];
   if (items.length <= ROWS_P1) {
     pages.push(items);
@@ -109,12 +155,12 @@ export function printInvoice(bill, agency, settings) {
   }
   const totalPages = pages.length;
 
-  // ── Company header (every page) ───────────────────────────────────────────
+  // ── Company header ────────────────────────────────────────────────────────
   const b = settings?.business || {};
-  const cName  = b.companyName || "VRUNDAVAN MILK PRODUCTS";
-  const cAddr  = b.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
+  const cName = b.companyName || "VRUNDAVAN MILK PRODUCTS";
+  const cAddr = b.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
   const cPhone = b.phone || "95125 50255";
-  const cGst   = b.gstin || "24AARFV6273D1ZV";
+  const cGst = b.gstin || "24AARFV6273D1ZV";
 
   const coHeader = `
     <div class="co-header">
@@ -125,8 +171,8 @@ export function printInvoice(bill, agency, settings) {
       </div>
     </div>`;
 
-  // ── Table column header ───────────────────────────────────────────────────
-  const thead = `
+  // ── Table column header — GST bill shows HSN/SAC & GST% columns; Non-GST hides them ──
+  const thead = isGST ? `
     <thead>
       <tr>
         <th class="th" style="width:38px;">SrNo</th>
@@ -138,11 +184,21 @@ export function printInvoice(bill, agency, settings) {
         <th class="th" style="width:50px;">GST %</th>
         <th class="th" style="width:80px;">Amount</th>
       </tr>
+    </thead>` : `
+    <thead>
+      <tr>
+        <th class="th" style="width:38px;">SrNo</th>
+        <th class="th thl">Product Name</th>
+        <th class="th" style="width:70px;">Qty</th>
+        <th class="th" style="width:80px;">Rate</th>
+        <th class="th" style="width:56px;">Disc %</th>
+        <th class="th" style="width:90px;">Amount</th>
+      </tr>
     </thead>`;
 
-  // ── Filled item rows ──────────────────────────────────────────────────────
+  // ── Item rows — column count differs by bill type ─────────────────────────
   function buildRows(pageItems, srStart) {
-    return pageItems.map((it, i) => `
+    return pageItems.map((it, i) => isGST ? `
       <tr style="background:${(srStart + i) % 2 === 0 ? "#ffffff" : "#fffafa"};">
         <td class="td tdc">${srStart + i + 1}</td>
         <td class="td tdl" style="font-weight:600;">${it.name}</td>
@@ -152,35 +208,32 @@ export function printInvoice(bill, agency, settings) {
         <td class="td tdc" style="color:#065f46;font-weight:700;">${it.disc != null ? Number(it.disc).toFixed(1) + "%" : ""}</td>
         <td class="td tdc"></td>
         <td class="td tdr" style="font-weight:700;">${Number(it.amount || 0).toFixed(2)}</td>
-      </tr>`).join("");
-  }
-
-  // ── Blank rows — pads last page so footer stays at bottom of A4 ──────────
-  // Each blank row is exactly 20px (same as item rows) so the layout is uniform.
-  // Row count is capped at page capacity so total never overflows A4.
-  function buildBlankRows(count) {
-    if (count <= 0) return "";
-    return Array.from({ length: count }, () =>
-      `<tr style="height:20px;">
-        <td class="td tdc"></td><td class="td tdl"></td>
-        <td class="td tdc"></td><td class="td tdc"></td>
-        <td class="td tdr"></td><td class="td tdc"></td>
-        <td class="td tdc"></td><td class="td tdr"></td>
-       </tr>`
+      </tr>` : `
+      <tr style="background:${(srStart + i) % 2 === 0 ? "#ffffff" : "#fffafa"};">
+        <td class="td tdc">${srStart + i + 1}</td>
+        <td class="td tdl" style="font-weight:600;">${it.name}</td>
+        <td class="td tdc">${Number(it.qty || 0).toFixed(3)}</td>
+        <td class="td tdr">${Number(it.rate || 0).toFixed(2)}</td>
+        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.disc != null ? Number(it.disc).toFixed(1) + "%" : ""}</td>
+        <td class="td tdr" style="font-weight:700;">${Number(it.amount || 0).toFixed(2)}</td>
+      </tr>`
     ).join("");
   }
 
-  // ── Footer — last page only ───────────────────────────────────────────────
-  // Layout matches physical Vrundavan bill:
-  //   Row A: Bank details (left) | Sub Total / Discount (right)
-  //   Row B: Previous Balance ... Closing Balance  (full width)
-  //   Row C: Bill Amount in words  (full width)
-  //   Row D: Note (left) | Grand Total box (right)  ← matches screenshot
-  //   Row E: Terms & Condition (left) | For VRUNDAVAN + Signatory (right)
+  // ── Blank rows — pads last page so footer stays at bottom ────────────────
+  function buildBlankRows(count) {
+    if (count <= 0) return "";
+    const blankRow = isGST
+      ? `<tr style="height:20px;"><td class="td tdc"></td><td class="td tdl"></td><td class="td tdc"></td><td class="td tdc"></td><td class="td tdr"></td><td class="td tdc"></td><td class="td tdc"></td><td class="td tdr"></td></tr>`
+      : `<tr style="height:20px;"><td class="td tdc"></td><td class="td tdl"></td><td class="td tdc"></td><td class="td tdr"></td><td class="td tdc"></td><td class="td tdr"></td></tr>`;
+    return Array.from({ length: count }, () => blankRow).join("");
+  }
+
+  // ── Footer ────────────────────────────────────────────────────────────────
   const bk = settings?.bank || {};
-  const bName = bk.bankName  || "AXIS BANK LTD";
-  const bAcc  = bk.accountNo || "919020042817580";
-  const bIfsc = bk.ifsc      || "UTIB0001316";
+  const bName = bk.bankName || "AXIS BANK LTD";
+  const bAcc = bk.accountNo || "919020042817580";
+  const bIfsc = bk.ifsc || "UTIB0001316";
 
   const footerHTML = `
     <div class="foot-bank-row">
@@ -239,33 +292,42 @@ export function printInvoice(bill, agency, settings) {
       </div>
     </div>`;
 
+  // ── Invoice bar labels — differ by bill type ──────────────────────────────
+  // GST Bill:     "Debit Memo  |  TAX INVOICE  |  Original"
+  // Non-GST Bill: "Debit Memo  |  INVOICE      |  Original"
+  const invBarCenter = isGST ? "TAX INVOICE" : "INVOICE";
+
   // ── Assemble all pages ────────────────────────────────────────────────────
   let allPagesHTML = "";
   let srStart = 0;
 
   pages.forEach((pageItems, pi) => {
-    const isFirst    = pi === 0;
-    const isLast     = pi === totalPages - 1;
-    const capacity   = isFirst ? ROWS_P1 : ROWS_CONT;
-    // Blank rows only on the last page, capped at remaining capacity
+    const isFirst = pi === 0;
+    const isLast = pi === totalPages - 1;
+    const capacity = isFirst ? ROWS_P1 : ROWS_CONT;
     const blankCount = isLast ? Math.max(0, capacity - pageItems.length) : 0;
-    const cumQty     = items.slice(0, srStart + pageItems.length)
-                            .reduce((s, it) => s + Number(it.qty || 0), 0);
+    const cumQty = items.slice(0, srStart + pageItems.length)
+      .reduce((s, it) => s + Number(it.qty || 0), 0);
+
+    // tfoot colspan differs — GST has 8 cols, Non-GST has 6 cols
+    const colSpanTotal = isGST ? 8 : 6;
+    const colSpanLeft = isGST ? 3 : 2;
+    const colSpanMid = isGST ? 3 : 2;
 
     const tfoot = isLast
       ? `<tfoot>
            <tr>
-             <td colspan="3" class="td tdl">
-               <span style="font-size:10px;font-weight:700;color:#555;">GSTIN No.: ${cGst}</span>
+             <td colspan="${colSpanLeft}" class="td tdl">
+               ${isGST ? `<span style="font-size:10px;font-weight:700;color:#555;">GSTIN No.: ${cGst}</span>` : ""}
              </td>
              <td class="td tdc" style="font-weight:800;font-size:11px;">${totalQty.toFixed(3)}</td>
-             <td colspan="3" class="td tdr" style="font-weight:800;font-size:11px;">Sub Total</td>
+             <td colspan="${colSpanMid}" class="td tdr" style="font-weight:800;font-size:11px;">Sub Total</td>
              <td class="td tdr" style="font-weight:800;font-size:11px;">${subtotal.toFixed(2)}</td>
            </tr>
          </tfoot>`
       : `<tfoot>
            <tr style="background:#f5f5f5;">
-             <td colspan="8" class="td tdl" style="font-size:9px;color:#888;font-style:italic;">
+             <td colspan="${colSpanTotal}" class="td tdl" style="font-size:9px;color:#888;font-style:italic;">
                Page ${pi + 1} of ${totalPages} &nbsp;·&nbsp;
                Cumulative Qty: ${cumQty.toFixed(3)} &nbsp;·&nbsp;
                Continued on next page...
@@ -280,7 +342,7 @@ export function printInvoice(bill, agency, settings) {
       ${isFirst ? `
       <div class="inv-bar">
         <span class="inv-bar-left">Debit Memo</span>
-        <span class="inv-bar-mid">TAX INVOICE</span>
+        <span class="inv-bar-mid">${invBarCenter}</span>
         <span class="inv-bar-right"><span class="orig-badge">Original</span></span>
       </div>
       <div class="bill-grid">
@@ -290,7 +352,7 @@ export function printInvoice(bill, agency, settings) {
           <div style="font-size:11px;color:#444;margin-top:1px;">${agency?.phone || ""}</div>
           <div style="font-size:11px;font-weight:700;margin-top:1px;">${agency?.city || ""}</div>
           <div style="font-size:10px;color:#555;margin-top:2px;">Place of Supply : 24-Gujarat</div>
-          ${agency?.gst ? `<div style="font-size:10px;color:#555;margin-top:2px;">GSTIN: ${agency.gst}</div>` : ""}
+          ${isGST && agency?.gst ? `<div style="font-size:10px;color:#555;margin-top:2px;">GSTIN: ${agency.gst}</div>` : ""}
         </div>
         <div class="bill-inv">
           <div style="margin-bottom:8px;">
@@ -301,6 +363,7 @@ export function printInvoice(bill, agency, settings) {
             <div class="fld-lbl">DATE</div>
             <div style="font-size:14px;font-weight:800;">: &nbsp;${dateStr}</div>
           </div>
+          ${isGST ? `<div style="margin-bottom:8px;"><div class="fld-lbl">BILL TYPE</div><div style="font-size:11px;font-weight:700;color:#c8181e;">: &nbsp;GST INVOICE</div></div>` : `<div style="margin-bottom:8px;"><div class="fld-lbl">BILL TYPE</div><div style="font-size:11px;font-weight:700;color:#555;">: &nbsp;NON-GST</div></div>`}
           ${bill.createdByName ? `
           <div>
             <div class="fld-lbl">PREPARED BY</div>
@@ -346,29 +409,24 @@ export function printInvoice(bill, agency, settings) {
     .pg-break{page-break-after:always;border-bottom:none;}
     .no-print{margin-bottom:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
 
-    /* Company header */
     .co-header{display:flex;align-items:center;justify-content:center;gap:12px;padding:5px 0 6px;border-bottom:3px double #333;}
     .co-logo{height:54px;width:auto;}
     .co-name{font-family:'Playfair Display',serif;font-size:24px;font-weight:800;text-align:center;}
     .co-addr{font-size:10px;color:#444;text-align:center;margin-top:2px;}
 
-    /* TAX INVOICE bar */
     .inv-bar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;background:#111;color:#fff;padding:4px 12px;margin:5px 0 0;}
     .inv-bar-left{font-size:11px;font-weight:700;}
     .inv-bar-mid{font-size:14px;font-weight:800;letter-spacing:4px;text-align:center;}
     .inv-bar-right{font-size:11px;font-weight:700;text-align:right;}
     .orig-badge{border:1px solid #fff;padding:2px 8px;display:inline-block;}
 
-    /* Bill-to section */
     .bill-grid{display:grid;grid-template-columns:1fr 200px;border:1px solid #ccc;border-top:none;}
     .bill-to{padding:6px 10px;border-right:1px solid #ccc;}
     .bill-inv{padding:6px 10px;}
     .fld-lbl{font-size:9px;color:#666;text-transform:uppercase;font-weight:700;letter-spacing:0.3px;margin-bottom:1px;}
 
-    /* Continuation header bar */
     .cont-bar{display:flex;justify-content:space-between;background:#f0f0f0;border:1px solid #ccc;border-top:none;padding:4px 10px;font-size:10px;color:#333;}
 
-    /* Items table */
     .inv-table{width:100%;border-collapse:collapse;font-size:11px;}
     .th{background:#222;color:#fff;padding:5px 6px;font-size:9px;font-weight:700;text-transform:uppercase;border:1px solid #444;text-align:center;}
     .thl{text-align:left;}
@@ -378,9 +436,6 @@ export function printInvoice(bill, agency, settings) {
     .tdr{text-align:right;}
     tfoot td{background:#f0f0f0;font-weight:700;border:1px solid #ccc;padding:5px 7px;}
 
-    /* ── Footer rows — layout matches physical Vrundavan bill exactly ── */
-
-    /* Row A: Bank (left) | Sub Total + Discount (right) */
     .foot-bank-row{display:grid;grid-template-columns:1fr 230px;border:1px solid #ccc;border-top:none;}
     .bank-sec{padding:6px 10px;border-right:1px solid #ccc;}
     .bank-row{display:flex;gap:4px;margin-bottom:2px;font-size:10px;}
@@ -389,22 +444,18 @@ export function printInvoice(bill, agency, settings) {
     .trow{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px dashed #eee;font-size:11px;}
     .trow:last-child{border-bottom:none;}
 
-    /* Row B: Previous Balance / Closing Balance */
     .foot-prevbal-row{border:1px solid #ccc;border-top:none;padding:6px 10px;display:flex;align-items:center;gap:6px;}
     .prevbal-val{font-size:15px;font-weight:800;color:#222;}
     .closing-val{font-size:20px;font-weight:800;color:#c8181e;}
 
-    /* Row C: Bill Amount in words */
     .foot-words-row{border:1px solid #ccc;border-top:none;padding:5px 10px;font-size:10px;line-height:1.5;}
 
-    /* Row D: Note (left) | Grand Total box (right) — matches screenshot */
     .foot-note-grand-row{display:grid;grid-template-columns:1fr 230px;border:1px solid #ccc;border-top:none;min-height:34px;}
     .note-sec{padding:6px 10px;border-right:1px solid #ccc;font-size:10px;font-weight:700;}
     .grand-sec{padding:5px 10px;display:flex;flex-direction:column;align-items:flex-end;justify-content:center;}
     .grand-label{font-size:10px;font-weight:800;color:#222;margin-bottom:1px;text-transform:uppercase;letter-spacing:0.5px;}
     .grand-val{font-family:'Playfair Display',serif;font-size:19px;font-weight:800;color:#c8181e;}
 
-    /* Row E: Terms (left) | For VRUNDAVAN + Signatory (right) */
     .foot-terms-sign-row{display:grid;grid-template-columns:1fr 200px;border:1px solid #ccc;border-top:none;}
     .terms-sec{padding:6px 10px;border-right:1px solid #ccc;font-size:9px;color:#444;line-height:1.5;}
     .sign-sec{padding:6px 10px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;min-height:58px;}
@@ -428,10 +479,12 @@ export function printInvoice(bill, agency, settings) {
       style="background:#eee;color:#333;border:none;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer;font-family:'Nunito',sans-serif;">
       ✕ Close
     </button>
+    ${isGST
+      ? `<span style="background:#ecfdf5;border:1px solid #a7f3d0;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#065f46;">✓ GST Invoice — ${bill.billNo}</span>`
+      : `<span style="background:#eff6ff;border:1px solid #bfdbfe;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#1e40af;">📄 Non-GST Invoice — ${bill.billNo}</span>`
+    }
     ${totalPages > 1
-      ? `<span style="background:#fff3cd;border:1px solid #ffc107;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#856404;">
-           📄 ${totalPages} pages
-         </span>`
+      ? `<span style="background:#fff3cd;border:1px solid #ffc107;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#856404;">📄 ${totalPages} pages</span>`
       : ""}
     <span style="background:#f0f9ff;border:1px solid #bae6fd;padding:6px 12px;border-radius:8px;font-size:10px;color:#0369a1;">
       💡 In print dialog: set Margins to <b>Minimum</b> &amp; uncheck <b>Headers and footers</b>
@@ -449,17 +502,20 @@ export function printInvoice(bill, agency, settings) {
 
 // ── WhatsApp bill share ───────────────────────────────────────────────────────
 export function shareWhatsApp(bill, agency, settings) {
-  const items    = bill.items || [];
-  const sub      = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
-  const disc     = Number(bill.discountAmt) || 0;
-  const billAmt  = sub - disc;
-  const prevBal  = Number(bill.prevBalance) || 0;
-  const advUsed  = Number(bill.advanceUsed) || 0;
+  const billType = bill.billType || "nongst";
+  const isGST = billType === "gst";
+
+  const items = bill.items || [];
+  const sub = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
+  const disc = Number(bill.discountAmt) || 0;
+  const billAmt = sub - disc;
+  const prevBal = Number(bill.prevBalance) || 0;
+  const advUsed = Number(bill.advanceUsed) || 0;
   const grandTotal = Math.max(0, billAmt + prevBal - advUsed);
-  const date     = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || new Date().toLocaleDateString("en-IN");
+  const date = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || new Date().toLocaleDateString("en-IN");
   const lines = items.map((it, i) => {
-    const gross   = Number(it.qty) * Number(it.rate);
-    const netAmt  = Number(it.amount || gross);
+    const gross = Number(it.qty) * Number(it.rate);
+    const netAmt = Number(it.amount || gross);
     const discPct = it.disc != null ? Number(it.disc) : null;
     const discAmt = discPct && discPct > 0 ? gross - netAmt : 0;
     const discLine = discPct != null && discPct > 0
@@ -472,26 +528,29 @@ export function shareWhatsApp(bill, agency, settings) {
   }).join("\n");
 
   let totals = `Sub Total         : Rs. ${sub.toFixed(2)}\n`;
-  if (disc > 0)    totals += `Discount          : Rs. ${disc.toFixed(2)}\n`;
-  totals            += `Current Bill      : Rs. ${billAmt.toFixed(2)}\n`;
+  if (disc > 0) totals += `Discount          : Rs. ${disc.toFixed(2)}\n`;
+  totals += `Current Bill      : Rs. ${billAmt.toFixed(2)}\n`;
   if (prevBal > 0) totals += `Previous Balance  : Rs. ${prevBal.toFixed(2)}\n`;
   if (advUsed > 0) totals += `Advance Deducted  : Rs. ${advUsed.toFixed(2)}\n`;
 
-  const b = settings?.business || {};
-  const cName  = b.companyName || "VRUNDAVAN MILK PRODUCTS";
-  const cAddr  = b.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
-  const cPhone = b.phone || "95125 50255";
+  const bz = settings?.business || {};
+  const cName = bz.companyName || "VRUNDAVAN MILK PRODUCTS";
+  const cAddr = bz.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
+  const cPhone = bz.phone || "95125 50255";
 
   const bk = settings?.bank || {};
-  const bName = bk.bankName  || "AXIS BANK";
-  const bAcc  = bk.accountNo || "919020042817580";
-  const bIfsc = bk.ifsc      || "UTIB0001316";
+  const bName = bk.bankName || "AXIS BANK";
+  const bAcc = bk.accountNo || "919020042817580";
+  const bIfsc = bk.ifsc || "UTIB0001316";
+
+  // Header line differs by bill type
+  const invoiceHeader = isGST ? "TAX INVOICE / DEBIT MEMO" : "INVOICE / DEBIT MEMO";
 
   const msg = `*${cName}*
 ${cAddr}
 Mo: ${cPhone}
 ━━━━━━━━━━━━━━━━━━━━
-*TAX INVOICE / DEBIT MEMO*
+*${invoiceHeader}*
 ━━━━━━━━━━━━━━━━━━━━
 Invoice No : ${bill.billNo}
 Date       : *${date}*
@@ -510,7 +569,7 @@ Thank you for your business!
 ${bName} | A/c: ${bAcc} | IFSC: ${bIfsc}`;
 
   const phone = agency?.phone?.replace(/\D/g, "");
-  const url   = phone
+  const url = phone
     ? `https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`
     : `https://wa.me/?text=${encodeURIComponent(msg)}`;
   window.open(url, "_blank");

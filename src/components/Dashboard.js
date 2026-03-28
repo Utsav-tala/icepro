@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { signOut }              from "firebase/auth";
 import {
-  collection, doc, addDoc, updateDoc, deleteDoc,
+  collection, doc, addDoc, updateDoc,
   query, orderBy, onSnapshot, serverTimestamp,
   getDocs, writeBatch,
 } from "firebase/firestore";
@@ -17,8 +17,17 @@ import { ProductsPage }                       from "./ProductsPage";
 import { VehiclesPage }                       from "./Vehicles";
 import { SettingsPage }                       from "./Settings";
 
+// ── Small bill-type badge helper ──────────────────────────────────────────────
+function BillTypeBadge({ billType }) {
+  if (billType === "gst") {
+    return <span style={{ background: "#ecfdf5", color: "#065f46", border: "1px solid #a7f3d0", borderRadius: 20, fontSize: 9, fontWeight: 800, padding: "2px 7px" }}>GST</span>;
+  }
+  return <span style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 20, fontSize: 9, fontWeight: 800, padding: "2px 7px" }}>NON-GST</span>;
+}
+
 // ── Agency Invoice History Modal ──────────────────────────────────────────────
-function AgencyHistoryModal({ agency, bills, onClose }) {
+// FIX: appSettings now passed in and forwarded to printInvoice / shareWhatsApp
+function AgencyHistoryModal({ agency, bills, onClose, appSettings }) {
   const ab    = bills.filter(b => b.agencyId === agency.id);
   const now   = new Date();
   const thisM = ab.filter(b => {
@@ -52,18 +61,20 @@ function AgencyHistoryModal({ agency, bills, onClose }) {
         {ab.length === 0
           ? <div style={{ textAlign: "center", padding: 32, color: C.textLight }}>No invoices yet.</div>
           : <div style={{ borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}` }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 60px 60px", gap: 8, padding: "10px 14px", background: "#fff8f8", borderBottom: `1px solid ${C.border}` }}>
-                {["Bill No", "Date", "Total", "PDF", "WA"].map((h, i) => (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 60px 60px 60px", gap: 8, padding: "10px 14px", background: "#fff8f8", borderBottom: `1px solid ${C.border}` }}>
+                {["Bill No", "Type", "Date", "Total", "PDF", "WA"].map((h, i) => (
                   <div key={i} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
                 ))}
               </div>
               {ab.map(b => (
-                <div key={b.id} className="tr" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 60px 60px", gap: 8, alignItems: "center" }}>
+                <div key={b.id} className="tr" style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 60px 60px 60px", gap: 8, alignItems: "center" }}>
                   <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
+                  <div><BillTypeBadge billType={b.billType} /></div>
                   <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
                   <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
-                  <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => printInvoice(b, agency)}>🖨️</button>
-                  <button className="btn btn-green"  style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => shareWhatsApp(b, agency)}>💬</button>
+                  {/* FIX: appSettings now passed correctly */}
+                  <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => printInvoice(b, agency, appSettings)}>🖨️</button>
+                  <button className="btn btn-green"  style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => shareWhatsApp(b, agency, appSettings)}>💬</button>
                 </div>
               ))}
             </div>
@@ -74,7 +85,7 @@ function AgencyHistoryModal({ agency, bills, onClose }) {
 }
 
 // ── Transaction History Modal ─────────────────────────────────────────────────
-function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agencies, payments }) {
+function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agencies, payments, appSettings }) {
   const [detail, setDetail] = useState(null);
 
   const totalBilled = bills.filter(b => b.agencyId === agency.id).reduce((s, b) => s + (b.total || 0), 0);
@@ -106,6 +117,10 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{v}</div>
                 </div>
               ))}
+              <div>
+                <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>Bill Type</div>
+                <BillTypeBadge billType={b.billType} />
+              </div>
             </div>
           </div>
           <div style={{ borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 16 }}>
@@ -151,8 +166,8 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-yellow" style={{ flex: 1 }} onClick={() => printInvoice(b, ag)}>🖨️ Print Bill</button>
-            <button className="btn btn-green"  style={{ flex: 1 }} onClick={() => shareWhatsApp(b, ag)}>💬 WhatsApp</button>
+            <button className="btn btn-yellow" style={{ flex: 1 }} onClick={() => printInvoice(b, ag, appSettings)}>🖨️ Print Bill</button>
+            <button className="btn btn-green"  style={{ flex: 1 }} onClick={() => shareWhatsApp(b, ag, appSettings)}>💬 WhatsApp</button>
           </div>
         </div>
       </div>
@@ -240,9 +255,10 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
                 >
                   <div style={{ fontSize: 20, marginTop: 2 }}>{isPay ? "💰" : "🧾"}</div>
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: C.text, marginBottom: 3 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.text, marginBottom: 3, display: "flex", alignItems: "center", gap: 6 }}>
                       {isPay ? "Payment Received" : `Bill — ${t.billNo || ""}`}
-                      <span style={{ fontSize: 10, color: C.textLight, marginLeft: 8, fontWeight: 400 }}>tap to view →</span>
+                      {!isPay && t.billType && <BillTypeBadge billType={t.billType} />}
+                      <span style={{ fontSize: 10, color: C.textLight, fontWeight: 400 }}>tap to view →</span>
                     </div>
                     {isPay && t.cashAmt > 0 && <div style={{ fontSize: 11, color: C.textLight }}>Cash: Rs. {t.cashAmt.toLocaleString()}</div>}
                     {isPay && t.bankAmt > 0 && <div style={{ fontSize: 11, color: C.textLight }}>Bank: Rs. {t.bankAmt.toLocaleString()}</div>}
@@ -285,11 +301,11 @@ export function Dashboard({ user, onLogout }) {
   const [txns,    setTxns]    = useState([]);
   const [txnLoad, setTxnLoad] = useState(false);
 
-  // Settings & Drawer
-  const [appSettings, setAppSettings] = useState(null);
-  const [drawerOpen,  setDrawerOpen]  = useState(false);
-  const [billDetail,  setBillDetail]  = useState(null);
-  const [showProfile, setShowProfile] = useState(false);
+  const [appSettings,   setAppSettings]   = useState(null);
+  const [drawerOpen,    setDrawerOpen]    = useState(false);
+  const [billDetail,    setBillDetail]    = useState(null);
+  const [showProfile,   setShowProfile]   = useState(false);
+  const [showInactive,  setShowInactive]  = useState(false); // toggle inactive agencies
 
   // ── Firestore listeners ───────────────────────────────────────────────────
   useEffect(() => {
@@ -316,19 +332,111 @@ export function Dashboard({ user, onLogout }) {
     const uProd = onSnapshot(
       query(collection(db, "products"), orderBy("name", "asc")),
       async snap => {
-        if (snap.empty) {
-          // ── First-time seed: write all 216 ITEM_CATALOG items to Firestore ──
+        // ── Always update UI state immediately ──────────────────────────────
+        const allProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setProducts(allProducts);
+
+        // ── Read appConfig flag — controls seeding & cleanup ────────────────
+        const configSnap = await getDocs(collection(db, "settings"));
+        const configDoc  = configSnap.docs.find(d => d.id === "appConfig");
+        const config     = configDoc?.data() || {};
+
+        // ── STEP 1: One-time duplicate cleanup ──────────────────────────────
+        // Runs only if cleanedDuplicates flag is not set yet.
+        // Groups all products by name, keeps the one matching ITEM_CATALOG rate,
+        // deletes all other duplicates. Custom products (not in catalog) are kept.
+        if (!config.cleanedDuplicates && allProducts.length > 0) {
+          console.log("Running one-time duplicate cleanup...");
           try {
-            const batch = writeBatch(db);
-            ITEM_CATALOG.forEach(item => {
-              const ref = doc(collection(db, "products"));
-              batch.set(ref, { name: item.name, rate: item.rate, createdAt: serverTimestamp() });
+            // Build a name→rate map from ITEM_CATALOG for quick lookup
+            const catalogMap = {};
+            ITEM_CATALOG.forEach(item => { catalogMap[item.name] = item.rate; });
+
+            // Group products by name
+            const byName = {};
+            allProducts.forEach(p => {
+              if (!byName[p.name]) byName[p.name] = [];
+              byName[p.name].push(p);
             });
-            await batch.commit();
-            console.log("Products seeded from ITEM_CATALOG.");
+
+            const toDelete = [];
+            Object.entries(byName).forEach(([name, group]) => {
+              if (group.length <= 1) return; // no duplicates, skip
+              // For catalog items: keep the one with matching catalog rate,
+              // or just keep the first one if none match exactly.
+              const catalogRate = catalogMap[name];
+              let keepIndex = 0;
+              if (catalogRate != null) {
+                const matchIdx = group.findIndex(p => p.rate === catalogRate);
+                if (matchIdx !== -1) keepIndex = matchIdx;
+              }
+              // Delete all others
+              group.forEach((p, i) => {
+                if (i !== keepIndex) toDelete.push(p.id);
+              });
+            });
+
+            if (toDelete.length > 0) {
+              // Firestore batch delete — max 500 per batch
+              const BATCH_SIZE = 400;
+              for (let i = 0; i < toDelete.length; i += BATCH_SIZE) {
+                const batch = writeBatch(db);
+                toDelete.slice(i, i + BATCH_SIZE).forEach(id => {
+                  batch.delete(doc(db, "products", id));
+                });
+                await batch.commit();
+              }
+              console.log(`Cleaned ${toDelete.length} duplicate products.`);
+            } else {
+              console.log("No duplicates found.");
+            }
+
+            // Set cleanup flag — never runs again
+            await updateDoc(doc(db, "settings", "appConfig"), {
+              cleanedDuplicates: true,
+              cleanedAt: serverTimestamp(),
+            }).catch(async () => {
+              // Doc may not exist yet — use setDoc via addDoc workaround
+              const { setDoc } = await import("firebase/firestore");
+              await setDoc(doc(db, "settings", "appConfig"), {
+                cleanedDuplicates: true,
+                cleanedAt: serverTimestamp(),
+                productsSeedDone: snap.docs.length > 0,
+              });
+            });
+          } catch (e) { console.error("Cleanup failed:", e); }
+          return; // listener will re-fire after deletes, updating UI
+        }
+
+        // ── STEP 2: Seed products if collection is empty & not seeded yet ───
+        // Uses settings/appConfig → productsSeedDone flag.
+        // This prevents re-seeding even if the collection is accidentally emptied.
+        if (snap.empty && !config.productsSeedDone) {
+          console.log("Seeding products from ITEM_CATALOG...");
+          try {
+            const { setDoc } = await import("firebase/firestore");
+            const BATCH_SIZE = 400;
+            for (let i = 0; i < ITEM_CATALOG.length; i += BATCH_SIZE) {
+              const batch = writeBatch(db);
+              ITEM_CATALOG.slice(i, i + BATCH_SIZE).forEach(item => {
+                const ref = doc(collection(db, "products"));
+                batch.set(ref, {
+                  name: item.name,
+                  rate: item.rate,
+                  discount: 14,
+                  createdAt: serverTimestamp(),
+                });
+              });
+              await batch.commit();
+            }
+            // Set seed done flag — auto-seed never runs again
+            await setDoc(doc(db, "settings", "appConfig"), {
+              productsSeedDone: true,
+              seededAt: serverTimestamp(),
+              cleanedDuplicates: true,
+            });
+            console.log("Products seeded successfully.");
           } catch (e) { console.error("Seed failed:", e); }
-        } else {
-          setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
         }
       },
       e => console.error("products:", e)
@@ -345,6 +453,7 @@ export function Dashboard({ user, onLogout }) {
   }, []);
 
   // ── Computed stats ────────────────────────────────────────────────────────
+  const activeAgencies = agencies.filter(a => a.status !== "inactive");
   const totalOut = agencies.reduce((s, a) => {
     const bal = computeBalance(a.id, bills, payments);
     return s + Math.max(0, bal);
@@ -355,8 +464,11 @@ export function Dashboard({ user, onLogout }) {
   async function approveOrder(o) {
     await updateDoc(doc(db, "orders", o.id), { status: "approved" });
     const ag = agencies.find(a => a.id === o.agencyId);
+    // Orders approved from here use nongst by default (can be changed later)
+    const billNo = await genInvNo("nongst");
     await addDoc(collection(db, "bills"), {
-      billNo: genInvNo(), agencyId: o.agencyId, agencyName: ag?.name || "",
+      billNo, billType: "nongst",
+      agencyId: o.agencyId, agencyName: ag?.name || "",
       items: o.items || [], subtotal: o.total, discountAmt: 0,
       total: o.total, prevBalance: 0, advanceUsed: 0, grandTotal: o.total,
       notes: "Auto from order", createdByName: user?.name || "",
@@ -365,7 +477,9 @@ export function Dashboard({ user, onLogout }) {
   }
   async function rejectOrder(o) { await updateDoc(doc(db, "orders", o.id), { status: "rejected" }); }
 
-  // ── Transaction history (auto-cleans orphaned entries) ────────────────────
+  // ── Transaction history ───────────────────────────────────────────────────
+  // NOTE: Removed auto-delete of orphaned transactions — too risky for production.
+  // Orphaned entries are simply filtered out from display without deleting from DB.
   async function openTxnHistory(agency) {
     setTxnMod(agency); setTxnLoad(true); setTxns([]);
     try {
@@ -375,25 +489,31 @@ export function Dashboard({ user, onLogout }) {
       const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       const billIds = new Set(bills.map(b => b.id));
       const payIds  = new Set(payments.map(p => p.id));
-      const valid   = [];
-      const toDelete = [];
-      for (const t of allTxns) {
-        const isOrphan =
-          (t.type === "bill"    && t.billId    && !billIds.has(t.billId)) ||
-          (t.type === "payment" && t.paymentId && !payIds.has(t.paymentId));
-        if (isOrphan) toDelete.push(deleteDoc(doc(db, "agencies", agency.id, "transactions", t.id)));
-        else valid.push(t);
-      }
-      if (toDelete.length > 0) await Promise.all(toDelete);
+      // Only filter display — do NOT delete from Firestore
+      const valid = allTxns.filter(t => {
+        if (t.type === "bill"    && t.billId    && !billIds.has(t.billId))    return false;
+        if (t.type === "payment" && t.paymentId && !payIds.has(t.paymentId)) return false;
+        return true;
+      });
       setTxns(valid);
     } catch (e) { console.error("txns:", e); }
     setTxnLoad(false);
   }
 
-  async function delAgency(id) {
-    if (!window.confirm("Delete this agency? This cannot be undone.")) return;
-    await deleteDoc(doc(db, "agencies", id));
-    setSelAgency(null);
+  // ── Deactivate / Reactivate agency — owner only ──────────────────────────
+  // Hard delete is blocked by Firestore rules. We set status field instead.
+  async function toggleAgencyStatus(agency) {
+    const isActive = agency.status === "active";
+    const confirmMsg = isActive
+      ? `Deactivate "${agency.name}"? They will be hidden from all lists and cannot receive new bills.`
+      : `Reactivate "${agency.name}"? They will appear in lists again.`;
+    if (!window.confirm(confirmMsg)) return;
+    await updateDoc(doc(db, "agencies", agency.id), {
+      status: isActive ? "inactive" : "active",
+      updatedAt: serverTimestamp(),
+    });
+    // Update local selAgency state so button label changes immediately
+    setSelAgency(prev => prev ? { ...prev, status: isActive ? "inactive" : "active" } : prev);
   }
   async function doLogout() { await signOut(auth); onLogout(); }
   function goPage(p) { setPage(p); setSelAgency(null); setDrawerOpen(false); }
@@ -423,7 +543,7 @@ export function Dashboard({ user, onLogout }) {
       )}
       {billMod.open && (
         <CreateBillModal
-          agencies={agencies}
+          agencies={activeAgencies}
           preAgencyId={billMod.preId}
           currentUser={user}
           bills={bills}
@@ -433,12 +553,14 @@ export function Dashboard({ user, onLogout }) {
           onClose={() => setBillMod({ open: false, preId: "" })}
         />
       )}
-      {histMod && <AgencyHistoryModal agency={histMod} bills={bills} onClose={() => setHistMod(null)} />}
+      {/* FIX: appSettings now passed to AgencyHistoryModal */}
+      {histMod && <AgencyHistoryModal agency={histMod} bills={bills} appSettings={appSettings} onClose={() => setHistMod(null)} />}
       {payMod  && <PaymentModal agency={payMod} currentUser={user} bills={bills} payments={payments} onClose={() => setPayMod(null)} />}
       {txnMod  && (
         <TransactionHistoryModal
           agency={txnMod} txns={txns} loading={txnLoad}
           bills={bills} agencies={agencies} payments={payments}
+          appSettings={appSettings}
           onClose={() => { setTxnMod(null); setTxns([]); }}
         />
       )}
@@ -466,6 +588,10 @@ export function Dashboard({ user, onLogout }) {
                       <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{v}</div>
                     </div>
                   ))}
+                  <div>
+                    <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Bill Type</div>
+                    <BillTypeBadge billType={b.billType} />
+                  </div>
                 </div>
               </div>
               <div style={{ borderRadius: 12, overflow: "hidden", border: `1px solid ${C.border}`, marginBottom: 16 }}>
@@ -541,12 +667,12 @@ export function Dashboard({ user, onLogout }) {
 
       {/* ── MAIN CONTENT ── */}
       <div className="main-content" style={{ flex: 1, overflow: "auto", padding: "24px 28px" }}>
-        
-        {/* Mobile Hamburger Header — fixed via CSS on mobile */}
+
         <div className="mobile-header">
           <button className="hamburger" onClick={() => setDrawerOpen(true)}>☰</button>
           <Logo size={28} />
         </div>
+
         {/* ════ DASHBOARD HOME ════ */}
         {page === "dashboard" && !selAgency && (
           <div className="fi">
@@ -562,7 +688,7 @@ export function Dashboard({ user, onLogout }) {
             ) : (
               <>
                 <div className="stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 22 }}>
-                  <SC label="Total Agencies"    value={agencies.length}                   icon="🏢" color={C.redDark} accent={C.red}    sub={`${agencies.length} registered`} />
+                  <SC label="Total Agencies"    value={activeAgencies.length}             icon="🏢" color={C.redDark} accent={C.red}    sub={`${activeAgencies.length} active`} />
                   <SC label="Pending Orders"    value={pendingOrders.length}              icon="📦" color="#d97706"  accent={C.yellow} sub="awaiting approval" />
                   <SC label="Total Outstanding" value={`Rs.${totalOut.toLocaleString()}`} icon="⚠️" color={C.red}   accent={C.red}    sub="live calculated" />
                   <SC label="Bills This Month"  value={`Rs.${bills.filter(b => { const d = b.createdAt?.toDate?.(); return d && d.getMonth() === new Date().getMonth(); }).reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`} icon="🧾" color="#065f46" accent="#10b981" sub="total billed" />
@@ -584,7 +710,7 @@ export function Dashboard({ user, onLogout }) {
                     </div>
                     {agencies.length === 0
                       ? <div className="empty-state"><div className="icon">🏢</div><p>No agencies yet</p><button className="btn btn-red" style={{ fontSize: 12 }} onClick={() => setAgMod({ open: true, editing: null })}>+ Add First Agency</button></div>
-                      : agencies.slice(0, 6).map(a => {
+                      : activeAgencies.slice(0, 6).map(a => {
                           const bal = computeBalance(a.id, bills, payments);
                           const bd  = balanceDisplay(bal);
                           return (
@@ -619,8 +745,11 @@ export function Dashboard({ user, onLogout }) {
                             <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{b.agencyName || "—"}</div>
                             <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
                           </div>
-                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
-                            <div style={{ fontSize: 11, color: C.textLight }}>{b.billNo}</div>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3, alignItems: "center" }}>
+                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                              <div style={{ fontSize: 11, color: C.textLight }}>{b.billNo}</div>
+                              <BillTypeBadge billType={b.billType} />
+                            </div>
                             <div style={{ fontWeight: 800, fontSize: 12, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
                           </div>
                         </div>
@@ -681,16 +810,17 @@ export function Dashboard({ user, onLogout }) {
             {bills.length === 0
               ? <div className="empty-state card"><div className="icon">🧾</div><p>No bills yet.</p><button className="btn btn-red" onClick={() => setBillMod({ open: true, preId: "" })}>+ Create First Bill</button></div>
               : <div className="card" style={{ padding: 0 }}>
-                  <div className="mobile-grid-hide" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 1fr 80px 60px 70px 70px", gap: 6, padding: "10px 14px", background: "#fff8f8", borderRadius: "14px 14px 0 0", borderBottom: `1px solid ${C.border}` }}>
-                    {["Bill No", "Agency", "Total", "Date", "By", "PDF", "WA"].map((h, i) => (
+                  <div className="mobile-grid-hide" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 80px 1fr 80px 60px 70px 70px", gap: 6, padding: "10px 14px", background: "#fff8f8", borderRadius: "14px 14px 0 0", borderBottom: `1px solid ${C.border}` }}>
+                    {["Bill No", "Agency", "Type", "Total", "Date", "By", "PDF", "WA"].map((h, i) => (
                       <div key={i} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
                     ))}
                   </div>
                   {bills.map(b => (
-                    <div key={b.id} className="tr mobile-bill-row" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 1fr 80px 60px 70px 70px", gap: 6, alignItems: "center", cursor: "pointer" }}
+                    <div key={b.id} className="tr mobile-bill-row" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 80px 1fr 80px 60px 70px 70px", gap: 6, alignItems: "center", cursor: "pointer" }}
                       onClick={() => setBillDetail(b)}>
                       <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{b.agencyName || "—"}</div>
+                      <div><BillTypeBadge billType={b.billType} /></div>
                       <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
                       <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
                       <div style={{ fontSize: 10, color: C.textLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.createdByName || "—"}</div>
@@ -710,9 +840,21 @@ export function Dashboard({ user, onLogout }) {
           <div className="fi">
             <PageHeader
               title="Agencies 🏢"
-              sub={`${agencies.length} agencies · Saurashtra`}
+              sub={`${activeAgencies.length} active · ${agencies.filter(a => a.status === "inactive").length} inactive`}
               action={<button className="btn btn-red" onClick={() => setAgMod({ open: true, editing: null })}>+ Add Agency</button>}
             />
+
+            {/* Show Inactive toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <label className="toggle">
+                <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
+                <span className="toggle-slider" />
+              </label>
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.textMid }}>
+                Show inactive agencies {agencies.filter(a => a.status === "inactive").length > 0 && `(${agencies.filter(a => a.status === "inactive").length})`}
+              </span>
+            </div>
+
             {agencies.length === 0
               ? <div className="empty-state card"><div className="icon">🏢</div><p>No agencies yet.</p><button className="btn btn-red" onClick={() => setAgMod({ open: true, editing: null })}>+ Add Agency</button></div>
               : <div className="card" style={{ padding: 0 }}>
@@ -721,29 +863,34 @@ export function Dashboard({ user, onLogout }) {
                       <div key={i} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
                     ))}
                   </div>
-                  {agencies.map(a => {
-                    const bal = computeBalance(a.id, bills, payments);
-                    const bd  = balanceDisplay(bal);
-                    return (
-                      <div key={a.id} className="tr mobile-agency-row" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.6fr 80px", gap: 6, alignItems: "center", cursor: "pointer" }}
-                        onClick={() => setSelAgency(a)}>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{a.name}</div>
-                          <div style={{ fontSize: 11, color: C.textLight }}>{a.city}</div>
+                  {agencies
+                    .filter(a => showInactive ? true : a.status !== "inactive")
+                    .map(a => {
+                      const isInactive = a.status === "inactive";
+                      const bal = computeBalance(a.id, bills, payments);
+                      const bd  = balanceDisplay(bal);
+                      return (
+                        <div key={a.id} className="tr mobile-agency-row"
+                          style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.6fr 80px", gap: 6, alignItems: "center", cursor: "pointer", opacity: isInactive ? 0.5 : 1, background: isInactive ? "#fafafa" : undefined }}
+                          onClick={() => setSelAgency(a)}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{a.name}</div>
+                            <div style={{ fontSize: 11, color: C.textLight }}>{a.city}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 12, color: C.text }}>{a.owner}</div>
+                            <div style={{ fontSize: 11, color: C.textLight }}>{a.phone}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 800, fontSize: 13, color: isInactive ? C.textLight : bd.color }}>{bd.display}</div>
+                            <div style={{ fontSize: 10, color: C.textLight }}>{bd.label}</div>
+                          </div>
+                          <div style={{ fontSize: 12, color: C.textMid }}>{a.totalShops || 0}</div>
+                          <Tag cls={`b${a.status === "active" ? "a" : "o"}`}>{a.status}</Tag>
                         </div>
-                        <div>
-                          <div style={{ fontSize: 12, color: C.text }}>{a.owner}</div>
-                          <div style={{ fontSize: 11, color: C.textLight }}>{a.phone}</div>
-                        </div>
-                        <div>
-                          <div style={{ fontWeight: 800, fontSize: 13, color: bd.color }}>{bd.display}</div>
-                          <div style={{ fontSize: 10, color: C.textLight }}>{bd.label}</div>
-                        </div>
-                        <div style={{ fontSize: 12, color: C.textMid }}>{a.totalShops || 0}</div>
-                        <Tag cls={`b${a.status === "active" ? "a" : "o"}`}>{a.status}</Tag>
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  }
                 </div>
             }
           </div>
@@ -767,14 +914,38 @@ export function Dashboard({ user, onLogout }) {
                 </div>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button className="btn btn-ghost" style={{ color: "#7c3aed", borderColor: "#ddd6fe" }} onClick={() => openTxnHistory(selAgency)}>📋 History</button>
-                  <button className="btn btn-yellow" onClick={() => setPayMod(selAgency)}>💰 Record Payment</button>
-                  <button className="btn btn-ghost"  onClick={() => setShowProfile(true)}>👤 Profile</button>
-                  <button className="btn btn-red"    onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Bill</button>
+                  {/* Only show payment/new bill buttons for active agencies */}
+                  {selAgency.status !== "inactive" && <>
+                    <button className="btn btn-yellow" onClick={() => setPayMod(selAgency)}>💰 Record Payment</button>
+                    <button className="btn btn-red"    onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Bill</button>
+                  </>}
+                  <button className="btn btn-ghost" onClick={() => setShowProfile(true)}>👤 Profile</button>
                   {selAgency.phone && <a href={`https://wa.me/91${selAgency.phone.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><button className="btn btn-green">💬 Chat</button></a>}
+                  {/* Deactivate / Reactivate — owner only */}
+                  {user?.role === "owner" && (
+                    <button
+                      className="btn"
+                      style={{
+                        background: selAgency.status === "inactive" ? "#ecfdf5" : "#fef2f2",
+                        color:      selAgency.status === "inactive" ? "#065f46" : "#991b1b",
+                        border:     `1px solid ${selAgency.status === "inactive" ? "#a7f3d0" : "#fecaca"}`,
+                        fontSize: 12,
+                      }}
+                      onClick={() => toggleAgencyStatus(selAgency)}
+                    >
+                      {selAgency.status === "inactive" ? "✅ Reactivate" : "🚫 Deactivate"}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Profile Modal */}
+              {/* Inactive warning banner */}
+              {selAgency.status === "inactive" && (
+                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderLeft: "4px solid #ef4444", borderRadius: 10, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: "#991b1b", fontWeight: 600 }}>
+                  🚫 This agency is <strong>inactive</strong>. New bills and payments are disabled. Only the owner can reactivate it.
+                </div>
+              )}
+
               {showProfile && (
                 <div className="mo" onClick={e => e.target.className === "mo" && setShowProfile(false)}>
                   <div className="mbox su" style={{ width: 520 }}>
@@ -827,9 +998,10 @@ export function Dashboard({ user, onLogout }) {
                 {ab.length === 0
                   ? <div className="empty-state" style={{ padding: 24 }}><p>No invoices yet.</p></div>
                   : ab.map(b => (
-                    <div key={b.id} className="tr" style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr 60px 60px", gap: 8, alignItems: "center", cursor: "pointer" }}
+                    <div key={b.id} className="tr" style={{ display: "grid", gridTemplateColumns: "1.2fr 70px 1fr 1fr 60px 60px", gap: 8, alignItems: "center", cursor: "pointer" }}
                       onClick={() => setBillDetail(b)}>
                       <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
+                      <div><BillTypeBadge billType={b.billType} /></div>
                       <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN")}</div>
                       <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
                       <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={e => { e.stopPropagation(); printInvoice(b, selAgency, appSettings); }}>🖨️</button>
