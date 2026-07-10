@@ -1,12 +1,6 @@
 // src/components/Dashboard.js
 import { useState, useEffect } from "react";
-import { signOut }              from "firebase/auth";
-import {
-  collection, doc, addDoc, updateDoc,
-  query, orderBy, onSnapshot, serverTimestamp,
-  getDocs, writeBatch,
-} from "firebase/firestore";
-import { auth, db }                           from "../firebase";
+import api from "../api";
 import { C, ITEM_CATALOG }                    from "../constants";
 import { computeBalance, balanceDisplay, genInvNo, printInvoice, shareWhatsApp } from "../helpers";
 import { Tag, SC, Logo, PageHeader }          from "./UI";
@@ -16,6 +10,7 @@ import { PaymentModal }                       from "./PaymentModal";
 import { ProductsPage }                       from "./ProductsPage";
 import { VehiclesPage }                       from "./Vehicles";
 import { SettingsPage }                       from "./Settings";
+import { ReportsPage }                        from "./ReportsPage";
 
 // ── Small bill-type badge helper ──────────────────────────────────────────────
 function BillTypeBadge({ billType }) {
@@ -31,7 +26,7 @@ function AgencyHistoryModal({ agency, bills, onClose, appSettings }) {
   const ab    = bills.filter(b => b.agencyId === agency.id);
   const now   = new Date();
   const thisM = ab.filter(b => {
-    const d = b.createdAt?.toDate?.();
+    const d = b.createdAt ? new Date(b.createdAt) : null;
     return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   });
   const mAmt = thisM.reduce((s, b) => s + (b.total || 0), 0);
@@ -70,7 +65,7 @@ function AgencyHistoryModal({ agency, bills, onClose, appSettings }) {
                 <div key={b.id} className="tr" style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 60px 60px 60px", gap: 8, alignItems: "center" }}>
                   <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
                   <div><BillTypeBadge billType={b.billType} /></div>
-                  <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
+                  <div style={{ fontSize: 11, color: C.textLight }}>{new Date(b.createdAt).toLocaleDateString("en-IN") || "—"}</div>
                   <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
                   {/* FIX: appSettings now passed correctly */}
                   <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => printInvoice(b, agency, appSettings)}>🖨️</button>
@@ -95,7 +90,9 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
 
   // ── Bill detail ───────────────────────────────────────────────────────────
   if (detail?.type === "bill") {
-    const b  = bills.find(x => x.id === detail.data.billId) || detail.data;
+    const rawBillId = detail.data.billId;
+    const searchId  = typeof rawBillId === 'object' && rawBillId ? String(rawBillId._id || rawBillId.id) : String(rawBillId);
+    const b  = bills.find(x => String(x.id) === searchId) || detail.data;
     const ag = agencies.find(a => a.id === b.agencyId) || agency;
     const prevBal    = Number(b.prevBalance) || 0;
     const advUsed    = Number(b.advanceUsed) || 0;
@@ -111,7 +108,7 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
           </div>
           <div style={{ background: "#fff8f8", borderRadius: 12, border: `1px solid ${C.border}`, padding: "16px 20px", marginBottom: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {[["Bill No", b.billNo], ["Agency", b.agencyName || agency.name], ["Date", b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"], ["Created By", b.createdByName || "—"]].map(([k, v]) => (
+              {[["Bill No", b.billNo], ["Agency", b.agencyName || agency.name], ["Date", b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"], ["Created By", b.createdByName || "—"]].map(([k, v]) => (
                 <div key={k}>
                   <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>{k}</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{v}</div>
@@ -195,7 +192,7 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
             {p.bankAmt > 0 && <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, borderBottom: `1px dashed ${C.border}` }}><span style={{ color: C.textLight }}>Bank Transfer</span><span style={{ fontWeight: 700 }}>Rs. {p.bankAmt.toLocaleString()}</span></div>}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, borderBottom: `1px dashed ${C.border}` }}>
               <span style={{ color: C.textLight }}>Date</span>
-              <span style={{ fontWeight: 600 }}>{p.createdAt?.toDate?.()?.toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" }) || "—"}</span>
+              <span style={{ fontWeight: 600 }}>{p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" }) : "—"}</span>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, borderBottom: p.notes ? `1px dashed ${C.border}` : "none" }}>
               <span style={{ color: C.textLight }}>Recorded By</span>
@@ -244,8 +241,8 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
           <div style={{ maxHeight: 420, overflowY: "auto", borderRadius: 12, border: `1px solid ${C.border}` }}>
             {txns.map((t, i) => {
               const isPay = t.type === "payment";
-              const date  = t.createdAt?.toDate?.()?.toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" }) || "—";
-              const time  = t.createdAt?.toDate?.()?.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) || "";
+              const date  = t.createdAt ? new Date(t.createdAt).toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" }) : "—";
+              const time  = t.createdAt ? new Date(t.createdAt).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "";
               return (
                 <div key={t.id}
                   onClick={() => setDetail({ type: t.type, data: t })}
@@ -307,150 +304,41 @@ export function Dashboard({ user, onLogout }) {
   const [showProfile,   setShowProfile]   = useState(false);
   const [showInactive,  setShowInactive]  = useState(false); // toggle inactive agencies
 
-  // ── Firestore listeners ───────────────────────────────────────────────────
+  const [refresh, setRefresh] = useState(0);
+
   useEffect(() => {
-    const uA = onSnapshot(
-      query(collection(db, "agencies"), orderBy("createdAt", "desc")),
-      s => { setAgencies(s.docs.map(d => ({ id: d.id, ...d.data() }))); setLoadingData(false); },
-      e => { console.error("agencies:", e); setLoadingData(false); }
-    );
-    const uB = onSnapshot(
-      query(collection(db, "bills"),    orderBy("createdAt", "desc")),
-      s => setBills(s.docs.map(d => ({ id: d.id, ...d.data() }))),
-      e => console.error("bills:", e)
-    );
-    const uO = onSnapshot(
-      query(collection(db, "orders"),   orderBy("createdAt", "desc")),
-      s => setOrders(s.docs.map(d => ({ id: d.id, ...d.data() }))),
-      e => console.error("orders:", e)
-    );
-    const uP = onSnapshot(
-      query(collection(db, "payments"), orderBy("createdAt", "desc")),
-      s => setPayments(s.docs.map(d => ({ id: d.id, ...d.data() }))),
-      e => console.error("payments:", e)
-    );
-    const uProd = onSnapshot(
-      query(collection(db, "products"), orderBy("name", "asc")),
-      async snap => {
-        // ── Always update UI state immediately ──────────────────────────────
-        const allProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setProducts(allProducts);
+    setLoadingData(true);
+    // Helper: normalize MongoDB docs so _id becomes id (string) for consistent comparisons
+    const norm    = arr => (arr || []).map(d => ({ ...d, id: String(d._id || d.id) }));
+    const normRef = arr => (arr || []).map(d => {
+      const aId = d.agencyId && typeof d.agencyId === 'object' ? (d.agencyId._id || d.agencyId.id) : d.agencyId;
+      return { ...d, id: String(d._id || d.id), agencyId: String(aId) };
+    });
 
-        // ── Read appConfig flag — controls seeding & cleanup ────────────────
-        const configSnap = await getDocs(collection(db, "settings"));
-        const configDoc  = configSnap.docs.find(d => d.id === "appConfig");
-        const config     = configDoc?.data() || {};
-
-        // ── STEP 1: One-time duplicate cleanup ──────────────────────────────
-        // Runs only if cleanedDuplicates flag is not set yet.
-        // Groups all products by name, keeps the one matching ITEM_CATALOG rate,
-        // deletes all other duplicates. Custom products (not in catalog) are kept.
-        if (!config.cleanedDuplicates && allProducts.length > 0) {
-          console.log("Running one-time duplicate cleanup...");
-          try {
-            // Build a name→rate map from ITEM_CATALOG for quick lookup
-            const catalogMap = {};
-            ITEM_CATALOG.forEach(item => { catalogMap[item.name] = item.rate; });
-
-            // Group products by name
-            const byName = {};
-            allProducts.forEach(p => {
-              if (!byName[p.name]) byName[p.name] = [];
-              byName[p.name].push(p);
-            });
-
-            const toDelete = [];
-            Object.entries(byName).forEach(([name, group]) => {
-              if (group.length <= 1) return; // no duplicates, skip
-              // For catalog items: keep the one with matching catalog rate,
-              // or just keep the first one if none match exactly.
-              const catalogRate = catalogMap[name];
-              let keepIndex = 0;
-              if (catalogRate != null) {
-                const matchIdx = group.findIndex(p => p.rate === catalogRate);
-                if (matchIdx !== -1) keepIndex = matchIdx;
-              }
-              // Delete all others
-              group.forEach((p, i) => {
-                if (i !== keepIndex) toDelete.push(p.id);
-              });
-            });
-
-            if (toDelete.length > 0) {
-              // Firestore batch delete — max 500 per batch
-              const BATCH_SIZE = 400;
-              for (let i = 0; i < toDelete.length; i += BATCH_SIZE) {
-                const batch = writeBatch(db);
-                toDelete.slice(i, i + BATCH_SIZE).forEach(id => {
-                  batch.delete(doc(db, "products", id));
-                });
-                await batch.commit();
-              }
-              console.log(`Cleaned ${toDelete.length} duplicate products.`);
-            } else {
-              console.log("No duplicates found.");
-            }
-
-            // Set cleanup flag — never runs again
-            await updateDoc(doc(db, "settings", "appConfig"), {
-              cleanedDuplicates: true,
-              cleanedAt: serverTimestamp(),
-            }).catch(async () => {
-              // Doc may not exist yet — use setDoc via addDoc workaround
-              const { setDoc } = await import("firebase/firestore");
-              await setDoc(doc(db, "settings", "appConfig"), {
-                cleanedDuplicates: true,
-                cleanedAt: serverTimestamp(),
-                productsSeedDone: snap.docs.length > 0,
-              });
-            });
-          } catch (e) { console.error("Cleanup failed:", e); }
-          return; // listener will re-fire after deletes, updating UI
+    async function fetchData() {
+      try {
+        const [agRes, bRes, pRes, prodRes, setRes] = await Promise.all([
+          api.get('/agencies'),
+          api.get('/bills'),
+          api.get('/payments'),
+          api.get('/products'),
+          api.get('/settings')
+        ]);
+        if (agRes.success) setAgencies(norm(agRes.data.agencies));
+        if (bRes.success) setBills(normRef(bRes.data.bills));
+        if (pRes.success) setPayments(normRef(pRes.data.payments));
+        if (prodRes.success) setProducts(norm(prodRes.data.products));
+        if (setRes.success && setRes.data) {
+           setAppSettings({ business: setRes.data.business, bank: setRes.data.bank });
         }
-
-        // ── STEP 2: Seed products if collection is empty & not seeded yet ───
-        // Uses settings/appConfig → productsSeedDone flag.
-        // This prevents re-seeding even if the collection is accidentally emptied.
-        if (snap.empty && !config.productsSeedDone) {
-          console.log("Seeding products from ITEM_CATALOG...");
-          try {
-            const { setDoc } = await import("firebase/firestore");
-            const BATCH_SIZE = 400;
-            for (let i = 0; i < ITEM_CATALOG.length; i += BATCH_SIZE) {
-              const batch = writeBatch(db);
-              ITEM_CATALOG.slice(i, i + BATCH_SIZE).forEach(item => {
-                const ref = doc(collection(db, "products"));
-                batch.set(ref, {
-                  name: item.name,
-                  rate: item.rate,
-                  discount: 14,
-                  createdAt: serverTimestamp(),
-                });
-              });
-              await batch.commit();
-            }
-            // Set seed done flag — auto-seed never runs again
-            await setDoc(doc(db, "settings", "appConfig"), {
-              productsSeedDone: true,
-              seededAt: serverTimestamp(),
-              cleanedDuplicates: true,
-            });
-            console.log("Products seeded successfully.");
-          } catch (e) { console.error("Seed failed:", e); }
-        }
-      },
-      e => console.error("products:", e)
-    );
-    const uSet = onSnapshot(
-      doc(db, "settings", "business"),
-      s => setAppSettings(prev => ({ ...prev, business: s.exists() ? s.data() : null }))
-    );
-    const uBank = onSnapshot(
-      doc(db, "settings", "bank"),
-      s => setAppSettings(prev => ({ ...prev, bank: s.exists() ? s.data() : null }))
-    );
-    return () => { uA(); uB(); uO(); uP(); uProd(); uSet(); uBank(); };
-  }, []);
+        setOrders([]); // Orders not implemented in backend yet
+      } catch (e) {
+        console.error("Failed to load dashboard data", e);
+      }
+      setLoadingData(false);
+    }
+    fetchData();
+  }, [refresh]);
 
   // ── Computed stats ────────────────────────────────────────────────────────
   const activeAgencies = agencies.filter(a => a.status !== "inactive");
@@ -461,21 +349,8 @@ export function Dashboard({ user, onLogout }) {
   const pendingOrders = orders.filter(o => o.status === "pending");
 
   // ── Order actions ─────────────────────────────────────────────────────────
-  async function approveOrder(o) {
-    await updateDoc(doc(db, "orders", o.id), { status: "approved" });
-    const ag = agencies.find(a => a.id === o.agencyId);
-    // Orders approved from here use nongst by default (can be changed later)
-    const billNo = await genInvNo("nongst");
-    await addDoc(collection(db, "bills"), {
-      billNo, billType: "nongst",
-      agencyId: o.agencyId, agencyName: ag?.name || "",
-      items: o.items || [], subtotal: o.total, discountAmt: 0,
-      total: o.total, prevBalance: 0, advanceUsed: 0, grandTotal: o.total,
-      notes: "Auto from order", createdByName: user?.name || "",
-      createdAt: serverTimestamp(),
-    });
-  }
-  async function rejectOrder(o) { await updateDoc(doc(db, "orders", o.id), { status: "rejected" }); }
+  async function approveOrder(o) {}
+  async function rejectOrder(o) {}
 
   // ── Transaction history ───────────────────────────────────────────────────
   // NOTE: Removed auto-delete of orphaned transactions — too risky for production.
@@ -483,19 +358,10 @@ export function Dashboard({ user, onLogout }) {
   async function openTxnHistory(agency) {
     setTxnMod(agency); setTxnLoad(true); setTxns([]);
     try {
-      const snap = await getDocs(
-        query(collection(db, "agencies", agency.id, "transactions"), orderBy("createdAt", "desc"))
-      );
-      const allTxns = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const billIds = new Set(bills.map(b => b.id));
-      const payIds  = new Set(payments.map(p => p.id));
-      // Only filter display — do NOT delete from Firestore
-      const valid = allTxns.filter(t => {
-        if (t.type === "bill"    && t.billId    && !billIds.has(t.billId))    return false;
-        if (t.type === "payment" && t.paymentId && !payIds.has(t.paymentId)) return false;
-        return true;
-      });
-      setTxns(valid);
+      const res = await api.get(`/agencies/${agency.id}/transactions`);
+      if (res.success) {
+        setTxns(res.data.transactions || []);
+      }
     } catch (e) { console.error("txns:", e); }
     setTxnLoad(false);
   }
@@ -508,14 +374,14 @@ export function Dashboard({ user, onLogout }) {
       ? `Deactivate "${agency.name}"? They will be hidden from all lists and cannot receive new bills.`
       : `Reactivate "${agency.name}"? They will appear in lists again.`;
     if (!window.confirm(confirmMsg)) return;
-    await updateDoc(doc(db, "agencies", agency.id), {
-      status: isActive ? "inactive" : "active",
-      updatedAt: serverTimestamp(),
-    });
-    // Update local selAgency state so button label changes immediately
-    setSelAgency(prev => prev ? { ...prev, status: isActive ? "inactive" : "active" } : prev);
+    try {
+      await api.patch(`/agencies/${agency.id}/status`, { status: isActive ? "inactive" : "active" });
+      setRefresh(r => r + 1);
+    } catch (e) {
+      alert("Failed to update status");
+    }
   }
-  async function doLogout() { await signOut(auth); onLogout(); }
+  async function doLogout() { onLogout(); }
   function goPage(p) { setPage(p); setSelAgency(null); setDrawerOpen(false); }
 
   const nav = [
@@ -525,6 +391,7 @@ export function Dashboard({ user, onLogout }) {
     { id: "agencies",  icon: "🏢", label: "Agencies" },
     { id: "products",  icon: "📦", label: "Products" },
     { id: "vehicles",  icon: "🚚", label: "Vehicles" },
+    { id: "reports",   icon: "📊", label: "Reports" },
   ];
   if (user?.role === "owner") {
     nav.push({ id: "settings", icon: "⚙️", label: "Settings" });
@@ -551,11 +418,12 @@ export function Dashboard({ user, onLogout }) {
           products={products}
           appSettings={appSettings}
           onClose={() => setBillMod({ open: false, preId: "" })}
+          onSaved={() => setRefresh(r => r + 1)}
         />
       )}
       {/* FIX: appSettings now passed to AgencyHistoryModal */}
       {histMod && <AgencyHistoryModal agency={histMod} bills={bills} appSettings={appSettings} onClose={() => setHistMod(null)} />}
-      {payMod  && <PaymentModal agency={payMod} currentUser={user} bills={bills} payments={payments} onClose={() => setPayMod(null)} />}
+      {payMod  && <PaymentModal agency={payMod} currentUser={user} bills={bills} payments={payments} onClose={() => setPayMod(null)} onSaved={() => setRefresh(r => r + 1)} />}
       {txnMod  && (
         <TransactionHistoryModal
           agency={txnMod} txns={txns} loading={txnLoad}
@@ -582,7 +450,7 @@ export function Dashboard({ user, onLogout }) {
               </div>
               <div style={{ background: "#fff8f8", borderRadius: 12, border: `1px solid ${C.border}`, padding: "16px 20px", marginBottom: 16 }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  {[["Bill No", b.billNo], ["Agency", b.agencyName || "—"], ["Date", b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"], ["Created By", b.createdByName || "—"]].map(([k, v]) => (
+                  {[["Bill No", b.billNo], ["Agency", b.agencyName || "—"], ["Date", b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"], ["Created By", b.createdByName || "—"]].map(([k, v]) => (
                     <div key={k}>
                       <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 2 }}>{k}</div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{v}</div>
@@ -691,7 +559,7 @@ export function Dashboard({ user, onLogout }) {
                   <SC label="Total Agencies"    value={activeAgencies.length}             icon="🏢" color={C.redDark} accent={C.red}    sub={`${activeAgencies.length} active`} />
                   <SC label="Pending Orders"    value={pendingOrders.length}              icon="📦" color="#d97706"  accent={C.yellow} sub="awaiting approval" />
                   <SC label="Total Outstanding" value={`Rs.${totalOut.toLocaleString()}`} icon="⚠️" color={C.red}   accent={C.red}    sub="live calculated" />
-                  <SC label="Bills This Month"  value={`Rs.${bills.filter(b => { const d = b.createdAt?.toDate?.(); return d && d.getMonth() === new Date().getMonth(); }).reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`} icon="🧾" color="#065f46" accent="#10b981" sub="total billed" />
+                  <SC label="Bills This Month"  value={`Rs.${bills.filter(b => { const d = b.createdAt ? new Date(b.createdAt) : null; return d && d.getMonth() === new Date().getMonth(); }).reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`} icon="🧾" color="#065f46" accent="#10b981" sub="total billed" />
                 </div>
                 {pendingOrders.length > 0 && (
                   <div style={{ background: "#fffbeb", border: `1px solid ${C.yellow}`, borderLeft: `4px solid ${C.yellow}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -743,7 +611,7 @@ export function Dashboard({ user, onLogout }) {
                           onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                           <div style={{ display: "flex", justifyContent: "space-between" }}>
                             <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{b.agencyName || "—"}</div>
-                            <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
+                            <div style={{ fontSize: 11, color: C.textLight }}>{new Date(b.createdAt).toLocaleDateString("en-IN") || "—"}</div>
                           </div>
                           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3, alignItems: "center" }}>
                             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -776,7 +644,7 @@ export function Dashboard({ user, onLogout }) {
                       <div>
                         <Tag cls={`b${o.status === "pending" ? "p" : o.status === "approved" ? "a" : "o"}`}>{o.status}</Tag>
                         <div style={{ fontWeight: 800, fontSize: 15, color: C.text, marginTop: 6 }}>{ag?.name || o.agencyId}</div>
-                        <div style={{ fontSize: 12, color: C.textLight }}>{o.createdAt?.toDate?.()?.toLocaleString("en-IN") || "Just now"}</div>
+                        <div style={{ fontSize: 12, color: C.textLight }}>{o.createdAt ? new Date(o.createdAt).toLocaleString("en-IN") : "Just now"}</div>
                         {o.notes && <div style={{ fontSize: 12, color: "#7c3aed", marginTop: 4 }}>📝 {o.notes}</div>}
                       </div>
                       <div style={{ fontWeight: 800, fontSize: 20, color: C.redDark }}>Rs.{(o.total || 0).toLocaleString()}</div>
@@ -822,7 +690,7 @@ export function Dashboard({ user, onLogout }) {
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{b.agencyName || "—"}</div>
                       <div><BillTypeBadge billType={b.billType} /></div>
                       <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
-                      <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || "—"}</div>
+                      <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"}</div>
                       <div style={{ fontSize: 10, color: C.textLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.createdByName || "—"}</div>
                       <div className="mobile-bill-actions" style={{ display: "flex", gap: 8 }}>
                         <button className="btn btn-yellow" style={{ fontSize: 13, padding: "6px 14px" }} onClick={e => { e.stopPropagation(); printInvoice(b, agencies.find(a => a.id === b.agencyId), appSettings); }}>🖨️ Print</button>
@@ -900,7 +768,7 @@ export function Dashboard({ user, onLogout }) {
         {page === "agencies" && selAgency && (() => {
           const ab     = bills.filter(b => b.agencyId === selAgency.id);
           const now    = new Date();
-          const mBills = ab.filter(b => { const d = b.createdAt?.toDate?.(); return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
+          const mBills = ab.filter(b => { const d = b.createdAt ? new Date(b.createdAt) : null; return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); });
           const mTotal = mBills.reduce((s, b) => s + (b.total || 0), 0);
           const liveBal = computeBalance(selAgency.id, bills, payments);
           const bd = balanceDisplay(liveBal);
@@ -1002,7 +870,7 @@ export function Dashboard({ user, onLogout }) {
                       onClick={() => setBillDetail(b)}>
                       <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
                       <div><BillTypeBadge billType={b.billType} /></div>
-                      <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt?.toDate?.()?.toLocaleDateString("en-IN")}</div>
+                      <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"}</div>
                       <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
                       <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={e => { e.stopPropagation(); printInvoice(b, selAgency, appSettings); }}>🖨️</button>
                       <button className="btn btn-green"  style={{ fontSize: 10, padding: "4px 8px" }} onClick={e => { e.stopPropagation(); shareWhatsApp(b, selAgency, appSettings); }}>💬</button>
@@ -1016,11 +884,16 @@ export function Dashboard({ user, onLogout }) {
 
         {/* ════ PRODUCTS ════ */}
         {page === "products" && (
-          <ProductsPage products={products} currentUser={user} />
+          <ProductsPage products={products} currentUser={user} onRefresh={() => setRefresh(r => r + 1)} />
         )}
 
         {/* ════ VEHICLES ════ */}
         {page === "vehicles" && <VehiclesPage />}
+
+        {/* ════ REPORTS ════ */}
+        {page === "reports" && (
+          <ReportsPage agencies={agencies} products={products} currentUser={user} />
+        )}
 
         {/* ════ SETTINGS ════ */}
         {page === "settings" && user?.role === "owner" && (

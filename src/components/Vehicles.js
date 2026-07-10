@@ -1,4 +1,7 @@
 // src/components/Vehicles.js
+// Fleet overview page — currently a UI PLACEHOLDER with dummy data.
+// ⚠️  No backend Vehicle model or API routes exist yet.
+// Phase 4 TODO: Replace DUMMY_VEHICLES with real API calls once /api/vehicles is implemented.
 import { Tag } from "./UI";
 
 const C = { red: "#c8181e", yellow: "#f5c518", text: "#1a0505", textLight: "#a07070", textMid: "#6b3333" };

@@ -1,10 +1,7 @@
 // src/components/Settings.js
 import { useState, useEffect } from "react";
-import {
-  doc, getDoc, setDoc, getDocs,
-  collection, writeBatch, serverTimestamp,
-} from "firebase/firestore";
-import { db } from "../firebase";
+import api from "../api";
+
 import { C, ITEM_CATALOG } from "../constants";
 import { PageHeader, Spin, Lbl } from "./UI";
 
@@ -34,20 +31,20 @@ export function SettingsPage({ currentUser }) {
   useEffect(() => {
     async function fetchSettings() {
       try {
-        const [sG, bG, baG, appG] = await Promise.all([
-          getDoc(doc(db, "settings", "signup")),
-          getDoc(doc(db, "settings", "business")),
-          getDoc(doc(db, "settings", "bank")),
-          getDoc(doc(db, "settings", "appConfig")),
-        ]);
-        if (sG.exists()) { setSignup(sG.data()); setOrigSignup(sG.data()); }
-        if (bG.exists()) { setBiz(bG.data()); setOrigBiz(bG.data()); }
-        if (baG.exists()) { setBank(baG.data()); setOrigBank(baG.data()); }
-        if (appG.exists()) { setSeedFlag(appG.data().productsSeedDone); }
+        const res = await api.get("/settings");
+        if (res.success && res.data) {
+          const { signup: sG, business: bG, bank: baG, appConfig: appG } = res.data;
+          if (sG) { setSignup(sG); setOrigSignup(sG); }
+          if (bG) { setBiz(bG); setOrigBiz(bG); }
+          if (baG) { setBank(baG); setOrigBank(baG); }
+          if (appG) { setSeedFlag(appG.productsSeedDone); }
+        }
 
         // Count products
-        const prodSnap = await getDocs(collection(db, "products"));
-        setProdCount(prodSnap.size);
+        try {
+          const prodRes = await api.get("/products");
+          if (prodRes.success) setProdCount(prodRes.data.length);
+        } catch (e) {}
       } catch (e) {
         console.error("Error loading settings:", e);
         setMsg({ text: "Failed to load settings.", type: "err" });
@@ -76,18 +73,19 @@ export function SettingsPage({ currentUser }) {
     setSaving(true);
     setMsg({ text: "", type: "" });
     try {
-      const meta = { updatedAt: serverTimestamp(), updatedBy: currentUser?.name || "Owner" };
-      await Promise.all([
-        setDoc(doc(db, "settings", "signup"), { ...signup, ...meta }),
-        setDoc(doc(db, "settings", "business"), { ...biz, ...meta }),
-        setDoc(doc(db, "settings", "bank"), { ...bank, ...meta }),
-      ]);
-      setOrigSignup({ ...signup });
-      setOrigBiz({ ...biz });
-      setOrigBank({ ...bank });
-      setMsg({ text: "All settings saved successfully!", type: "ok" });
-      setEditing(false);
-      setTimeout(() => setMsg({ text: "", type: "" }), 3000);
+      const res = await api.put("/settings", {
+        signup,
+        business: biz,
+        bank
+      });
+      if (res.success) {
+        setOrigSignup({ ...signup });
+        setOrigBiz({ ...biz });
+        setOrigBank({ ...bank });
+        setMsg({ text: "All settings saved successfully!", type: "ok" });
+        setEditing(false);
+        setTimeout(() => setMsg({ text: "", type: "" }), 3000);
+      }
     } catch (e) {
       console.error(e);
       setMsg({ text: "Failed to save settings.", type: "err" });
@@ -102,60 +100,7 @@ export function SettingsPage({ currentUser }) {
   // After this, the Dashboard listener will NOT auto-seed again (flags are reset
   // and re-set after seeding completes here directly).
   async function handleReseed() {
-    if (!window.confirm(
-      `This will DELETE all ${prodCount} existing products and re-seed ${ITEM_CATALOG.length} items from the default catalog.\n\nAny custom products or rate edits will be lost.\n\nAre you sure?`
-    )) return;
-
-    setReseedLoading(true);
-    setReseedMsg({ text: "", type: "" });
-
-    try {
-      // Step 1: Delete all existing products in batches
-      const prodSnap = await getDocs(collection(db, "products"));
-      const BATCH_SIZE = 400;
-      const allIds = prodSnap.docs.map(d => d.id);
-
-      for (let i = 0; i < allIds.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        allIds.slice(i, i + BATCH_SIZE).forEach(id => {
-          batch.delete(doc(db, "products", id));
-        });
-        await batch.commit();
-      }
-
-      // Step 2: Re-seed from ITEM_CATALOG in batches
-      for (let i = 0; i < ITEM_CATALOG.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        ITEM_CATALOG.slice(i, i + BATCH_SIZE).forEach(item => {
-          const ref = doc(collection(db, "products"));
-          batch.set(ref, {
-            name: item.name,
-            rate: item.rate,
-            discount: 14,
-            createdAt: serverTimestamp(),
-          });
-        });
-        await batch.commit();
-      }
-
-      // Step 3: Update flags — marks as seeded and cleaned so Dashboard
-      // listener does not try to run cleanup or seed again
-      await setDoc(doc(db, "settings", "appConfig"), {
-        productsSeedDone: true,
-        cleanedDuplicates: true,
-        reseededAt: serverTimestamp(),
-        reseededBy: currentUser?.name || "Owner",
-      });
-
-      // Update local state
-      setProdCount(ITEM_CATALOG.length);
-      setSeedFlag(true);
-      setReseedMsg({ text: `✅ Successfully re-seeded ${ITEM_CATALOG.length} products from default catalog.`, type: "ok" });
-    } catch (e) {
-      console.error("Re-seed failed:", e);
-      setReseedMsg({ text: "❌ Re-seed failed. Please try again.", type: "err" });
-    }
-    setReseedLoading(false);
+    alert("Re-seeding is disabled in the Node.js backend migration version to prevent accidental data loss.");
   }
 
   if (loading) {

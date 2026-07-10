@@ -1,6 +1,4 @@
-import { doc, runTransaction } from "firebase/firestore";
-import { db } from "./firebase";
-
+// src/helpers.js
 export function friendlyError(code) {
   const map = {
     "auth/email-already-in-use": "This email is already registered.",
@@ -27,53 +25,14 @@ export function getCurrentFY() {
   return `${String(startYear).slice(-2)}-${String(endYear).slice(-2)}`;
 }
 
-// ── Generate invoice number — atomic, sequential, duplicate-proof ─────────────
-//
-// billType: "gst"    → VMP/25-26/0001  (TAX INVOICE)
-// billType: "nongst" → GB/25-26/0001   (INVOICE)
-//
-// Uses Firestore runTransaction to atomically read + increment the counter.
-// If financial year has changed (April 1 rollover), resets the counter to 1.
-// Stored in: settings/billCounter → { fy, gbCount, vmpCount }
-//
-export async function genInvNo(billType = "nongst") {
-  const fy = getCurrentFY();
-  const counterRef = doc(db, "settings", "billCounter");
-
-  const newNumber = await runTransaction(db, async (transaction) => {
-    const snap = await transaction.get(counterRef);
-    let data = snap.exists() ? snap.data() : { fy, gbCount: 0, vmpCount: 0 };
-
-    // If financial year rolled over, reset both counters
-    if (data.fy !== fy) {
-      data = { fy, gbCount: 0, vmpCount: 0 };
-    }
-
-    let newCount;
-    if (billType === "gst") {
-      newCount = (data.vmpCount || 0) + 1;
-      transaction.set(counterRef, { ...data, fy, vmpCount: newCount });
-    } else {
-      newCount = (data.gbCount || 0) + 1;
-      transaction.set(counterRef, { ...data, fy, gbCount: newCount });
-    }
-
-    return newCount;
-  });
-
-  // Format: VMP/25-26/0001 or GB/25-26/0001
-  const prefix = billType === "gst" ? "VMP" : "GB";
-  const padded = String(newNumber).padStart(4, "0");
-  return `${prefix}/${fy}/${padded}`;
-}
-
 // ── Balance helpers ───────────────────────────────────────────────────────────
 export function computeBalance(agencyId, bills, payments) {
+  const id = String(agencyId);
   const billed = bills
-    .filter(b => b.agencyId === agencyId)
+    .filter(b => String(b.agencyId) === id)
     .reduce((s, b) => s + (b.total || 0), 0);
   const paid = payments
-    .filter(p => p.agencyId === agencyId)
+    .filter(p => String(p.agencyId) === id)
     .reduce((s, p) => s + (p.total || 0), 0);
   return billed - paid;
 }

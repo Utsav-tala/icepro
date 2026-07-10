@@ -1,7 +1,6 @@
 // src/components/PaymentModal.js
 import { useState } from "react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../firebase";
+import api from "../api";
 import { computeBalance } from "../helpers";
 import { Lbl, Modal, Spin } from "./UI";
 
@@ -44,7 +43,7 @@ function paymentWhatsApp(agency, prevBal, cashAmt, bankAmt, newBal, recordedBy) 
 }
 
 // ── PAYMENT MODAL ─────────────────────────────────────────────────────────────
-export function PaymentModal({ agency, onClose, currentUser, bills = [], payments = [] }) {
+export function PaymentModal({ agency, onClose, onSaved, currentUser, bills = [], payments = [] }) {
   // Live balance — same as agency page (positive = they owe us)
   const prevBal = Math.max(0, computeBalance(agency.id, bills, payments));
 
@@ -75,42 +74,32 @@ export function PaymentModal({ agency, onClose, currentUser, bills = [], payment
     try {
       const finalCash = mode === "bank" ? 0 : cash;
       const finalBank = mode === "cash" ? 0 : bank;
-      const finalTotal = finalCash + finalBank;
-      const finalNewBal = prevBal - finalTotal;
 
-      // 1. Save payment doc
-      const payRef = await addDoc(collection(db, "payments"), {
-        agencyId:     agency.id,
-        agencyName:   agency.name,
-        cashAmt:      finalCash,
-        bankAmt:      finalBank,
-        total:        finalTotal,
-        prevBalance:  prevBal,
-        newBalance:   finalNewBal,
-        notes,
-        recordedBy:   currentUser?.name || "",
-        recordedByUid:currentUser?.uid  || "",
-        createdAt:    serverTimestamp(),
-      });
+      const payload = {
+        agencyId: agency.id,
+        cashAmt: finalCash,
+        bankAmt: finalBank,
+        notes
+      };
 
-      // 2. Write to agency's transactions subcollection
-      await addDoc(collection(db, "agencies", agency.id, "transactions"), {
-        type:        "payment",
-        paymentId:   payRef.id,
-        cashAmt:     finalCash,
-        bankAmt:     finalBank,
-        amount:      finalTotal,
-        prevBalance: prevBal,
-        balance:     finalNewBal,
-        notes,
-        recordedBy:  currentUser?.name || "",
-        createdAt:   serverTimestamp(),
-      });
-
-      setSaved({ finalCash, finalBank, finalTotal, finalNewBal, snapPrevBal: prevBal });
+      const res = await api.post("/payments", payload);
+      if (res.success && res.data && res.data.payment) {
+        const p = res.data.payment;
+        setSaved({ 
+          finalCash: p.cashAmt, 
+          finalBank: p.bankAmt, 
+          finalTotal: p.total, 
+          finalNewBal: p.newBalance, 
+          snapPrevBal: p.prevBalance 
+        });
+        if (onSaved) onSaved();
+      } else {
+        setErr(res.message || "Failed to save payment.");
+      }
     } catch (e) {
       console.error(e);
-      setErr("Failed to save payment. Please try again.");
+      setErr(e.message || "Failed to save payment. Please try again.");
+    } finally {
       setLoading(false);
     }
   }

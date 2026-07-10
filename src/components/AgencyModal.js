@@ -1,7 +1,6 @@
 // src/components/AgencyModal.js
 import { useState } from "react";
-import { collection, doc, addDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../firebase";
+import api from "../api";
 import { Lbl, Modal, Spin } from "./UI";
 
 export function AgencyModal({ onClose, onSaved, existing }) {
@@ -45,13 +44,11 @@ export function AgencyModal({ onClose, onSaved, existing }) {
 
     try {
       if (isEdit) {
-        await updateDoc(doc(db, "agencies", existing.id), { ...data, updatedAt: serverTimestamp() });
+        await api.put(`/agencies/${existing.id}`, data);
         onSaved({ ...existing, ...data });
       } else {
-        const ref = await addDoc(collection(db, "agencies"), {
-          ...data, outstanding: 0, status: "active", createdAt: serverTimestamp(),
-        });
-        onSaved({ id: ref.id, ...data, outstanding: 0, status: "active" });
+        const res = await api.post("/agencies", data);
+        onSaved(res.data);
       }
       onClose();
     } catch (e) {

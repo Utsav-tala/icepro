@@ -1,9 +1,7 @@
-
 // src/components/BillModal.js
 import { useState, useRef, useEffect } from "react";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "../firebase";
-import { genInvNo, toWords, printInvoice, shareWhatsApp, computeBalance } from "../helpers";
+import api from "../api";
+import { toWords, printInvoice, shareWhatsApp, computeBalance } from "../helpers";
 import { Lbl, Modal, Spin } from "./UI";
 
 const C = {
@@ -13,7 +11,7 @@ const C = {
 
 const DEFAULT_DISC = 14;
 
-export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, bills = [], payments = [], products = [], appSettings }) {
+export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, currentUser, bills = [], payments = [], products = [], appSettings }) {
   const [agencyId,   setAgencyId]   = useState(preAgencyId || "");
   const [notes,      setNotes]      = useState("");
   const [lockedItems,setLockedItems]= useState([]);
@@ -48,7 +46,9 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
   function pickItem(prod) {
     setSearchQ(prod.name);
     setPickedItem(prod);
-    setRate(String(prod.rate));
+    // Use GST rate for GST bills, non-GST rate for non-GST bills
+    const effectiveRate = billType === "gst" ? (prod.rateGst ?? prod.rate) : prod.rate;
+    setRate(String(effectiveRate));
     setDisc(String(prod.discount ?? DEFAULT_DISC));
     setDropOpen(false);
     setDropIndex(-1);
@@ -123,46 +123,28 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
     setLoading(true);
     setErr("");
     try {
-      // ── Generate bill number atomically — async Firestore transaction ──
-      const billNo = await genInvNo(billType);
-
-      const ref = await addDoc(collection(db, "bills"), {
-        billNo,
-        billType,                          // "gst" or "nongst" — saved permanently
+      const payload = {
         agencyId,
-        agencyName:    agency?.name || "",
-        items:         lockedItems,
-        subtotal:      grossTotal,
-        discountAmt:   totalDiscAmt,
-        total:         billAmt,
-        prevBalance:   prevBal,
-        advanceUsed:   advanceUsed,
-        grandTotal:    grandTotal,
-        notes,
-        createdByName: currentUser?.name || "",
-        createdByUid:  currentUser?.uid  || "",
-        createdAt:     serverTimestamp(),
-      });
+        billType,
+        items: lockedItems,
+        discountAmt: totalDiscAmt,
+        notes
+      };
 
-      await addDoc(collection(db, "agencies", agencyId, "transactions"), {
-        type: "bill", billNo, billId: ref.id, billType, amount: billAmt,
-        prevBalance: prevBal, advanceUsed: advanceUsed,
-        createdByName: currentUser?.name || "",
-        createdAt: serverTimestamp(),
-      });
-
-      setSaved({
-        bill: {
-          id: ref.id, billNo, billType, agencyId, agencyName: agency?.name || "",
-          items: lockedItems, subtotal: grossTotal, discountAmt: totalDiscAmt,
-          total: billAmt, prevBalance: prevBal, advanceUsed, grandTotal,
-          notes, createdByName: currentUser?.name || "",
-        },
-        agency,
-      });
+      const res = await api.post("/bills", payload);
+      if (res.success && res.data && res.data.bill) {
+        setSaved({
+          bill: res.data.bill,
+          agency,
+        });
+        if (onSaved) onSaved();
+      } else {
+        setErr(res.message || "Failed to save bill.");
+      }
     } catch (e) {
       console.error(e);
-      setErr("Failed to save bill. Please try again.");
+      setErr(e.message || "Failed to save bill. Please try again.");
+    } finally {
       setLoading(false);
     }
   }
@@ -205,7 +187,7 @@ export function CreateBillModal({ agencies, onClose, preAgencyId, currentUser, b
             <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.red }}>Rs. {grandTotal.toLocaleString()}</span>
           </div>
         </div>
-        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Firestore</div>
+        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Database</div>
         <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
           <button className="btn btn-red"   style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => printInvoice(saved.bill, saved.agency, appSettings)}>🖨️ Print / PDF</button>
           <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency, appSettings)}>💬 WhatsApp</button>
