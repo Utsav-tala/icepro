@@ -292,7 +292,8 @@ export function Dashboard({ user, onLogout }) {
   const [loadingData,setLoadingData]= useState(true);
 
   const [agMod,   setAgMod]   = useState({ open: false, editing: null });
-  const [billMod, setBillMod] = useState({ open: false, preId: "" });
+  const [billMod, setBillMod] = useState({ open: false, preId: "", editOrder: null });
+  const [billAction, setBillAction] = useState("");   // id of the order being delivered/cancelled
   const [histMod, setHistMod] = useState(null);
   const [payMod,  setPayMod]  = useState(null);
   const [txnMod,  setTxnMod]  = useState(null);
@@ -348,14 +349,58 @@ export function Dashboard({ user, onLogout }) {
   // ── Computed stats ────────────────────────────────────────────────────────
   const activeAgencies = agencies.filter(a => a.status !== "inactive");
   const totalOut = agencies.reduce((s, a) => {
-    const bal = computeBalance(a.id, bills, payments);
+    const bal = computeBalance(a.id, bills, payments);   // excludes pending/cancelled
     return s + Math.max(0, bal);
   }, 0);
   const pendingOrders = orders.filter(o => o.status === "pending");
 
+  // ── Bills split by lifecycle ──────────────────────────────────────────────
+  // A `pending` bill is an ORDER: stock is reserved, but no invoice number exists and it
+  // counts toward nobody's balance. Only a `delivered` bill is a real invoice. Cancelled
+  // ones are history and are shown nowhere.
+  const pendingBills  = bills.filter(b => b.status === "pending");
+  const invoicedBills = bills.filter(b => b.status !== "pending" && b.status !== "cancelled");
+
   // ── Order actions ─────────────────────────────────────────────────────────
   async function approveOrder(o) {}
   async function rejectOrder(o) {}
+
+  // Deliver a pending order — the server burns the invoice number, snapshots the balance,
+  // writes the Transaction row, and ships the stock. It becomes immutable at that point.
+  async function deliverOrder(b) {
+    if (!window.confirm(
+      `Deliver this order for ${b.agencyName}?\n\n` +
+      `An invoice number will be issued, Rs.${(b.total || 0).toLocaleString()} will be added to ` +
+      `their balance, and the stock will leave inventory. The bill can no longer be edited.`
+    )) return;
+
+    setBillAction(b.id);
+    try {
+      const res = await api.post(`/bills/${b.id}/deliver`);
+      setRefresh(r => r + 1);
+      alert(res.message || "Delivered.");
+    } catch (e) {
+      alert(e.message || "Could not deliver the order.");
+    } finally { setBillAction(""); }
+  }
+
+  // Cancel a pending order — releases its reserved stock and frees the agency's open slot.
+  // Soft: the record is kept, because the stock ledger refers to it.
+  async function cancelOrder(b) {
+    const reason = window.prompt(
+      `Cancel this order for ${b.agencyName}? Its reserved stock will be released.\n\nReason (optional):`,
+      ""
+    );
+    if (reason === null) return;   // user dismissed the prompt
+
+    setBillAction(b.id);
+    try {
+      await api.post(`/bills/${b.id}/cancel`, { reason });
+      setRefresh(r => r + 1);
+    } catch (e) {
+      alert(e.message || "Could not cancel the order.");
+    } finally { setBillAction(""); }
+  }
 
   // ── Transaction history ───────────────────────────────────────────────────
   // NOTE: Removed auto-delete of orphaned transactions — too risky for production.
@@ -392,7 +437,8 @@ export function Dashboard({ user, onLogout }) {
   const nav = [
     { id: "dashboard", icon: "🏠", label: "Home" },
     { id: "orders",    icon: "📦", label: "Orders",   badge: pendingOrders.length },
-    { id: "billing",   icon: "🧾", label: "Billing" },
+    // Badge = undelivered orders. These hold reserved stock and are not yet invoices.
+    { id: "billing",   icon: "🧾", label: "Billing",  badge: pendingBills.length },
     { id: "agencies",  icon: "🏢", label: "Agencies" },
     { id: "products",  icon: "📦", label: "Products" },
     // Badge = products promised beyond stock on hand. It is the production alert, so it
@@ -418,15 +464,18 @@ export function Dashboard({ user, onLogout }) {
       )}
       {billMod.open && (
         <CreateBillModal
+          key={billMod.editOrder?._id || "new"}   /* remount when switching to edit mode, so the form re-seeds from the order */
           agencies={activeAgencies}
           preAgencyId={billMod.preId}
+          editOrder={billMod.editOrder}
           currentUser={user}
           bills={bills}
           payments={payments}
           products={products}
           appSettings={appSettings}
-          onClose={() => setBillMod({ open: false, preId: "" })}
+          onClose={() => setBillMod({ open: false, preId: "", editOrder: null })}
           onSaved={() => setRefresh(r => r + 1)}
+          onEditOrder={(order) => setBillMod({ open: true, preId: "", editOrder: order })}
         />
       )}
       {/* FIX: appSettings now passed to AgencyHistoryModal */}
@@ -555,7 +604,7 @@ export function Dashboard({ user, onLogout }) {
             <PageHeader
               title={`${(() => { const h = new Date().getHours(); return h >= 5 && h < 12 ? "Good morning" : h >= 12 && h < 17 ? "Good afternoon" : h >= 17 && h < 21 ? "Good evening" : "Good night"; })()}, ${user?.name?.split(" ")[0] || "Owner"} 🌅`}
               sub={new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) + " · Vrundavan Ice Cream"}
-              action={<button className="btn btn-red hide-mobile" onClick={() => setBillMod({ open: true, preId: "" })}>+ New Bill</button>}
+              action={<button className="btn btn-red hide-mobile" onClick={() => setBillMod({ open: true, preId: "" })}>+ New Order</button>}
             />
             {loadingData ? (
               <div style={{ textAlign: "center", padding: 60, color: C.textLight }}>
@@ -608,7 +657,7 @@ export function Dashboard({ user, onLogout }) {
                   <div className="card">
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                       <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Recent Bills</div>
-                      <button className="btn btn-red" style={{ fontSize: 11 }} onClick={() => setBillMod({ open: true, preId: "" })}>+ Bill</button>
+                      <button className="btn btn-red" style={{ fontSize: 11 }} onClick={() => setBillMod({ open: true, preId: "" })}>+ Order</button>
                     </div>
                     {bills.length === 0
                       ? <div className="empty-state"><div className="icon">🧾</div><p>No bills yet</p></div>
@@ -675,23 +724,69 @@ export function Dashboard({ user, onLogout }) {
           <div className="fi">
             <PageHeader
               title="Billing 🧾"
-              sub={`${bills.length} invoices`}
-              action={<button className="btn btn-red" onClick={() => setBillMod({ open: true, preId: "" })}>+ Create Bill</button>}
+              sub={`${pendingBills.length} pending · ${invoicedBills.length} invoiced`}
+              action={<button className="btn btn-red" onClick={() => setBillMod({ open: true, preId: "" })}>+ New Order</button>}
             />
             <div className="stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
-              <SC label="Total Billed"   value={`Rs.${bills.reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`}    icon="🧾" color={C.redDark} accent={C.red}    />
-              <SC label="Total Received" value={`Rs.${payments.reduce((s, p) => s + (p.total || 0), 0).toLocaleString()}`}  icon="💰" color="#065f46"  accent="#10b981" />
-              <SC label="Net Outstanding" value={`Rs.${totalOut.toLocaleString()}`}                                          icon="⚠️" color={C.red}   accent={C.yellow} />
+              {/* Only DELIVERED bills are money. A pending order books nothing until it ships,
+                  so counting it here would overstate what has actually been billed. */}
+              <SC label="Total Billed"    value={`Rs.${invoicedBills.reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`} sub="delivered invoices only" icon="🧾" color={C.redDark} accent={C.red}    />
+              <SC label="Total Received"  value={`Rs.${payments.reduce((s, p) => s + (p.total || 0), 0).toLocaleString()}`}      icon="💰" color="#065f46"  accent="#10b981" />
+              <SC label="Net Outstanding" value={`Rs.${totalOut.toLocaleString()}`}                                              icon="⚠️" color={C.red}   accent={C.yellow} />
             </div>
-            {bills.length === 0
-              ? <div className="empty-state card"><div className="icon">🧾</div><p>No bills yet.</p><button className="btn btn-red" onClick={() => setBillMod({ open: true, preId: "" })}>+ Create First Bill</button></div>
+
+            {/* ── PENDING ORDERS ────────────────────────────────────────────
+                Undelivered orders. Stock is reserved for these; no invoice number exists
+                and they count toward nobody's balance yet. Each agency can hold only one. */}
+            {pendingBills.length > 0 && (
+              <div className="card" style={{ padding: 0, marginBottom: 20, borderColor: "#fcd34d" }}>
+                <div style={{ padding: "12px 16px", background: "#fffbeb", borderRadius: "14px 14px 0 0", borderBottom: "1px solid #fcd34d" }}>
+                  <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 15, fontWeight: 800, color: "#b45309" }}>
+                    ⏳ Pending Orders ({pendingBills.length})
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textMid, marginTop: 2 }}>
+                    Stock is reserved. No invoice number and no balance impact until delivered — and they stay editable until then.
+                  </div>
+                </div>
+                {pendingBills.map(b => (
+                  <div key={b.id} className="tr" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 190 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{b.agencyName || "—"}</div>
+                      <div style={{ fontSize: 11, color: C.textLight, marginTop: 2 }}>
+                        {(b.items || []).length} item(s) · {(b.items || []).reduce((s, i) => s + Number(i.qty || 0), 0)} boxes ·{" "}
+                        {b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "—"}
+                        {b.createdByName ? ` · ${b.createdByName}` : ""}
+                      </div>
+                    </div>
+                    <div style={{ fontWeight: 800, color: C.redDark, fontSize: 15, minWidth: 90, textAlign: "right" }}>
+                      Rs.{(b.total || 0).toLocaleString()}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="btn btn-ghost" style={{ fontSize: 11, padding: "6px 12px" }}
+                        disabled={billAction === b.id}
+                        onClick={() => setBillMod({ open: true, preId: "", editOrder: b })}>✏️ Edit</button>
+                      <button className="btn btn-green" style={{ fontSize: 11, padding: "6px 12px" }}
+                        disabled={billAction === b.id} onClick={() => deliverOrder(b)}>
+                        {billAction === b.id ? "⏳ …" : "🚚 Deliver"}
+                      </button>
+                      <button className="btn btn-danger" style={{ fontSize: 11, padding: "6px 12px" }}
+                        disabled={billAction === b.id} onClick={() => cancelOrder(b)}>🗑️</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* ── INVOICES (delivered) ───────────────────────────────────── */}
+            {invoicedBills.length === 0
+              ? <div className="empty-state card"><div className="icon">🧾</div><p>No invoices yet — deliver an order to issue one.</p><button className="btn btn-red" onClick={() => setBillMod({ open: true, preId: "" })}>+ New Order</button></div>
               : <div className="card" style={{ padding: 0 }}>
                   <div className="mobile-grid-hide" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 80px 1fr 80px 60px 70px 70px", gap: 6, padding: "10px 14px", background: "#fff8f8", borderRadius: "14px 14px 0 0", borderBottom: `1px solid ${C.border}` }}>
                     {["Bill No", "Agency", "Type", "Total", "Date", "By", "PDF", "WA"].map((h, i) => (
                       <div key={i} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase" }}>{h}</div>
                     ))}
                   </div>
-                  {bills.map(b => (
+                  {invoicedBills.map(b => (
                     <div key={b.id} className="tr mobile-bill-row" style={{ display: "grid", gridTemplateColumns: "1.1fr 1.5fr 80px 1fr 80px 60px 70px 70px", gap: 6, alignItems: "center", cursor: "pointer" }}
                       onClick={() => setBillDetail(b)}>
                       <div style={{ fontWeight: 700, fontSize: 12, color: C.red }}>{b.billNo}</div>
@@ -793,7 +888,7 @@ export function Dashboard({ user, onLogout }) {
                   {/* Only show payment/new bill buttons for active agencies */}
                   {selAgency.status !== "inactive" && <>
                     <button className="btn btn-yellow" onClick={() => setPayMod(selAgency)}>💰 Record Payment</button>
-                    <button className="btn btn-red"    onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Bill</button>
+                    <button className="btn btn-red"    onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Order</button>
                   </>}
                   <button className="btn btn-ghost" onClick={() => setShowProfile(true)}>👤 Profile</button>
                   {selAgency.phone && <a href={`https://wa.me/91${selAgency.phone.replace(/\D/g, "")}`} target="_blank" rel="noreferrer"><button className="btn btn-green">💬 Chat</button></a>}
@@ -869,7 +964,7 @@ export function Dashboard({ user, onLogout }) {
               <div className="card" style={{ padding: 0 }}>
                 <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, fontWeight: 800, color: C.text, background: "#fff8f8", borderRadius: "14px 14px 0 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span>🧾 All Invoices</span>
-                  <button className="btn btn-red" style={{ fontSize: 11, padding: "5px 14px" }} onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Bill</button>
+                  <button className="btn btn-red" style={{ fontSize: 11, padding: "5px 14px" }} onClick={() => setBillMod({ open: true, preId: selAgency.id })}>+ New Order</button>
                 </div>
                 {ab.length === 0
                   ? <div className="empty-state" style={{ padding: 24 }}><p>No invoices yet.</p></div>

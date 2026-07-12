@@ -56,7 +56,12 @@ const createBillValidation = [
     .optional()
     .isFloat({ min: 0, max: 100 }).withMessage("Item discount must be between 0 and 100"),
 
+  // Optional, and ignored if sent. The server derives every amount itself in
+  // bill.service.js:priceItems() — a client-supplied amount is never trusted, so demanding
+  // one was pointless. (updateBillValidation has always worked this way; this brings create
+  // into line with it.)
   body("items.*.amount")
+    .optional()
     .isFloat({ min: 0 }).withMessage("Each item amount must be a non-negative number"),
 
   body("discountAmt")
@@ -71,10 +76,73 @@ const createBillValidation = [
   validate,
 ];
 
+// ── Edit a pending order ──────────────────────────────────────────────────────
+// Same item rules as creation, plus the revision the client read. `revision` is REQUIRED:
+// without it there is no optimistic lock, and a concurrent edit would compute its stock
+// delta from a stale baseline and corrupt the ledger.
+const updateBillValidation = [
+  body("revision")
+    .exists().withMessage("revision is required — reload the order and try again")
+    .isInt({ min: 0 }).withMessage("revision must be a non-negative integer"),
+
+  body("billType")
+    .optional()
+    .isIn(Object.values(BILL_TYPES))
+    .withMessage(`Bill type must be one of: ${Object.values(BILL_TYPES).join(", ")}`),
+
+  body("items")
+    .isArray({ min: 1 }).withMessage("An order must have at least one item"),
+
+  body("items.*.productId")
+    .optional()
+    .isMongoId().withMessage("Invalid product ID format"),
+
+  body("items.*.name")
+    .trim()
+    .notEmpty().withMessage("Each item must have a name"),
+
+  body("items.*.qty")
+    .isFloat({ min: 0.01 }).withMessage("Each item quantity must be greater than 0"),
+
+  body("items.*.rate")
+    .isFloat({ min: 0 }).withMessage("Each item rate must be a non-negative number"),
+
+  body("items.*.disc")
+    .optional()
+    .isFloat({ min: 0, max: 100 }).withMessage("Item discount must be between 0 and 100"),
+
+  body("notes")
+    .optional()
+    .trim()
+    .isLength({ max: 500 }).withMessage("Notes cannot exceed 500 characters"),
+
+  validate,
+];
+
+// ── Cancel a pending order ────────────────────────────────────────────────────
+const cancelBillValidation = [
+  body("reason")
+    .optional()
+    .trim()
+    .isLength({ max: 300 }).withMessage("Reason cannot exceed 300 characters"),
+  validate,
+];
+
 // ── ObjectId param check ──────────────────────────────────────────────────────
 const idParamValidation = [
   param("id").isMongoId().withMessage("Invalid bill ID format"),
   validate,
 ];
 
-module.exports = { createBillValidation, idParamValidation };
+const agencyIdParamValidation = [
+  param("agencyId").isMongoId().withMessage("Invalid agency ID format"),
+  validate,
+];
+
+module.exports = {
+  createBillValidation,
+  updateBillValidation,
+  cancelBillValidation,
+  idParamValidation,
+  agencyIdParamValidation,
+};

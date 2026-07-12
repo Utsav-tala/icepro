@@ -343,15 +343,25 @@ Fields: `name`, `ownerName`, `mobile`, `city`, `address`, `totalShops`, `gstNo`,
 ### `bills`
 Fields: `billNo`, `billType` (`gst|nongst`), `status`, `deliveredAt`, `revision`, `agencyId`, `agencyName`, `items[]` (**`productId`**, `name, qty, rate, disc, amount`), `subtotal`, `discountAmt`, `total`, `prevBalance`, `advanceUsed`, `grandTotal`, `notes`, `createdByName`, `createdById`, `createdAt`
 
-> **Bill lifecycle (added 2026-07-12).** `status` ∈ `pending | delivered | cancelled`, **default `delivered`**.
-> New bills default to `delivered`, so **today's billing behaviour is unchanged** — a bill is an invoice the
-> moment it is written. The `pending` path is fully implemented and tested in the stock engine, but nothing
-> sends `status: "pending"` until its UI is built.
+> **Bill lifecycle — ORDER-FIRST (live since 2026-07-12).** `status` ∈ `pending | delivered | cancelled`.
+> **A new bill is created as `pending` — an ORDER, not an invoice.** It must be explicitly *delivered* to
+> become one.
 >
 > - **`pending`** — an **ORDER**. Reserves stock (`committed`) but books **NO money**: no invoice number,
->   no `Transaction` row, **not counted in the agency balance**. Freely editable.
-> - **`delivered`** — a real **INVOICE**. Invoice number burned, `Transaction` written, physical stock out.
-> - **`cancelled`** — releases whatever the bill was still holding.
+>   no `Transaction` row, **not counted in the agency balance**. Freely editable. **An agency may hold only
+>   ONE at a time** (see the index below).
+> - **`delivered`** — a real **INVOICE**. Invoice number burned, `prevBalance` snapshotted, `Transaction`
+>   written, physical stock out. **Immutable** from here on.
+> - **`cancelled`** — releases the stock commitment and frees the agency's open-order slot. Soft, not a hard
+>   delete: the `StockMovement` ledger references the bill by `refId`, so deleting the document would orphan
+>   those rows. Cancelling also keeps the history ("this agency cancelled 3 orders last month").
+>
+> **⚠️ What this changed about day-to-day use:**
+> 1. *Create Bill* no longer issues an invoice number — you get an order. The number is burned at **Deliver**.
+> 2. **You cannot print an invoice for an undelivered order** (there is no number on it). `GET /bills/:id/pdf`
+>    returns 400 for a `pending` bill.
+> 3. **Today's Sales, Reports and agency balances count only delivered bills.** An order taken today and
+>    delivered tomorrow lands in tomorrow's sales.
 >
 > **Why pending books no money — this is the load-bearing decision.** Agency balance is derived by summing
 > `Bill.total`, and each bill stores a `prevBalance` snapshot that gets printed on the invoice. If an editable
@@ -372,7 +382,18 @@ Fields: `billNo`, `billType` (`gst|nongst`), `status`, `deliveredAt`, `revision`
 > bill would clobber each other — and worse, the second edit would compute its stock delta from a **stale
 > baseline**, corrupting the ledger permanently. An edit must send the revision it read; a mismatch → 409.
 >
-> **`billNo`** is now optional with a **partial unique index** (`partialFilterExpression: { billNo: { $type: "string" } }`).
+> **⭐ ONE PENDING ORDER PER AGENCY** — enforced by a **partial unique index**:
+> ```js
+> billSchema.index({ agencyId: 1 },
+>   { unique: true, partialFilterExpression: { status: "pending" }, name: "one_pending_bill_per_agency" });
+> ```
+> Unique **only among pending bills**, so an agency can still have unlimited delivered and cancelled ones.
+> This lives in the **database**, not just in a service check, because a check alone is a race: two clerks
+> hitting Save in the same instant would both read "no open order" and both insert. `bill.service.js`
+> pre-checks it anyway (`assertNoOpenOrder`) purely so the user gets a useful message *with the offending
+> order attached* instead of a raw E11000. Both paths are tested, including the actual concurrent race.
+>
+> **`billNo`** is optional with its own **partial unique index** (`{ billNo: { $type: "string" } }`).
 > A plain `unique: true` would reject the *second* pending bill, since every pending bill has `billNo` unset and
 > Mongo treats two missing values as duplicates. ⚠️ Mongoose does **not** drop the old plain-unique index —
 > `scripts/backfillProductIds.js` swaps it.
@@ -469,13 +490,24 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 | `PATCH` | `/:id/status` | owner only | Toggle active/inactive |
 | `GET` | `/:id/transactions` | Protected | Get transaction history |
 
-### Bills — `/api/bills`
+### Bills — `/api/bills` — the ORDER → INVOICE lifecycle
 | Method | Path | Access | Description |
 |---|---|---|---|
-| `GET` | `/` | Protected | Get all bills |
-| `POST` | `/` | owner, manager | Create bill (atomic) |
+| `GET` | `/` | Protected | All bills. Filters: `agencyId`, `billType`, **`status`**, `search`, `page`, `limit`. |
+| `GET` | `/open/:agencyId` | Protected | The agency's open (pending) order, or `null`. The UI calls this **as soon as an agency is picked**, so the user is stopped *before* typing out a bill that would only be rejected. Declared before `/:id` or Express matches `"open"` as an id. |
+| `POST` | `/` | owner, manager | **Take an order.** Defaults to `status: "pending"` — reserves stock, no invoice number, no money. **409 if the agency already has an open order**, with a message naming it. |
+| `PATCH` | `/:id` | owner, manager | **Edit a pending order.** Body must include the **`revision`** the client read → 409 on mismatch (optimistic locking). Pending only. |
+| `POST` | `/:id/deliver` | owner, manager | **It becomes an invoice.** Burns the invoice number, snapshots `prevBalance`, writes the `Transaction`, ships the stock. Immutable afterwards. |
+| `POST` | `/:id/cancel` | owner, manager | Releases the stock commitment and frees the agency's slot. Body: `{ reason? }`. Soft — the record is kept. |
 | `GET` | `/:id` | Protected | Get single bill |
-| `GET` | `/:id/pdf` | Protected | Render invoice as PDF (Puppeteer). Served `Content-Disposition: inline` → opens in browser PDF viewer (print or save). |
+| `GET` | `/:id/pdf` | Protected | Render invoice as PDF (Puppeteer), served `inline`. **400 for a `pending` bill** — an undelivered order has no invoice number, so there is nothing to render. |
+
+> **`revision` is not optional on PATCH.** Without it there is no optimistic lock, and a second concurrent
+> edit would compute its stock delta against a **stale baseline** — permanently corrupting the ledger. This is
+> the one place where skipping a check silently produces wrong *inventory*, not just a wrong bill.
+
+> **`items[].amount` is optional and ignored.** The server re-derives every amount in
+> `bill.service.js:priceItems()` and never trusts a client-sent one.
 
 ### Payments — `/api/payments`
 | Method | Path | Access | Description |
@@ -635,7 +667,8 @@ LOCK_TIME_MINUTES=15
 | 8 | Reports / Analytics Module (`$facet` aggregation endpoint + `📊 Reports` React page) | ✅ Complete |
 | 9 | Repo restructure: root-level frontend → standard `frontend/` + `backend/` two-folder layout | ✅ Complete |
 | 10 | Server-side PDF pipeline (Puppeteer): print-ready invoice + report PDFs, single "Print" button opens PDF in browser viewer (print or save) | ✅ Complete |
-| 11 | **Inventory Module** — `StockMovement` ledger, `onHand`/`committed`/`available` model, `applyBillStock` diff engine, production-shortfall alert, `🧊 Inventory` React page. Also lays the full groundwork for the pending/delivered editable-bill feature. | ✅ Complete |
+| 11 | **Inventory Module** — `StockMovement` ledger, `onHand`/`committed`/`available` model, `applyBillStock` diff engine, production-shortfall alert, `🧊 Inventory` React page. | ✅ Complete |
+| 12 | **Order-first billing** — a new bill is a `pending` ORDER (editable, stock-reserving, no invoice number, no money) until it is *delivered*. `PATCH` / `deliver` / `cancel` endpoints, optimistic locking via `revision`, and **one open order per agency** enforced by a partial unique index. Pending Orders UI. | ✅ Complete |
 
 ---
 
@@ -648,8 +681,16 @@ LOCK_TIME_MINUTES=15
   free-text `name` against the catalog. It writes **no** `StockMovement` rows and touches **no** stock counters —
   historical bills do not retroactively drain inventory. Real stock starts from today, entered as `opening`
   movements on the Inventory page. Line items matching no product are left `productId: null` and reported.
-- **Inventory starts at zero.** Every product begins with `onHand: 0`. Enter real counts via the Inventory page
-  → *Record Movement* → **Opening Stock**, or stock will read as a shortfall the moment anything is billed.
+- **Opening stock is SET** *(2026-07-12)*: all 216 active products were seeded at **200 boxes** (43,200 total)
+  via `node scripts/seedOpeningStock.js --commit`. That script is **idempotent** — a product that already has an
+  `opening` movement is skipped, never topped up, so re-running it cannot double the stock. To correct a count
+  afterwards use an **`adjustment`** movement (which leaves an audit trail), not a second opening.
+- **⚠️ Mongoose `default:` does NOT backfill existing documents.** This caused a real bug: `Product.committed`
+  was physically absent from all 216 pre-existing products. Mongoose *hides* this on reads (it applies the
+  default on hydration), so JS-side code looked fine — but a raw `$expr` aggregation bypasses Mongoose, saw the
+  field as missing → `null`, and **`null < 0` is TRUE in BSON sort order**, so the shortfall query reported
+  every single product as short. Fixed on both sides: `$ifNull` in the query, and a real `$set` backfill
+  (Step 0 of `backfillProductIds.js`). **Remember this whenever adding a field to an existing collection.**
 - **Orders Feature is Stubbed**: The `Order` model and routes exist but the UI only shows a placeholder. The backend `order.routes.js` exists but `order.controller.js` / `order.service.js` need full implementation. (`Order.items[]` already carries `productId`, so it can drive inventory when built.)
 - **No Admin Panel for Role Management**: Changing a user's role must be done directly in MongoDB Compass or via a one-off Node script. A future `/api/users` admin route should be added.
 - **No Token Refresh**: The refresh token helpers are scaffolded in `utils/tokens.js` but the `/api/auth/refresh` endpoint does not yet exist. JWT access tokens expire in 15 min (or `ACCESS_TOKEN_EXPIRY`). The `api.js` client already implements the silent refresh queue — only the server endpoint is missing.
@@ -662,18 +703,7 @@ LOCK_TIME_MINUTES=15
 ## 12. NEXT STEPS / ROADMAP
 
 ### Immediate (To Complete the MERN Portfolio)
-- [ ] **Pending / Delivered Bills (editable orders)** — ⭐ *the inventory backend for this is ALREADY DONE.*
-  `Bill.status`, `Bill.revision`, and the `applyBillStock(prev, next)` diff engine all exist and are tested;
-  pending bills are already excluded from the agency balance and burn no invoice number. What remains is
-  essentially UI + three thin endpoints:
-  - `PATCH /api/bills/:id` — edit a `pending` bill. Load the old bill, build the new one, call
-    `applyBillStock(oldBill, newBill, user, session)` inside a session. **Must check `revision`** and reject a
-    mismatch with 409 (optimistic locking), or a concurrent edit computes its stock delta from a stale baseline
-    and corrupts the ledger.
-  - `POST /api/bills/:id/deliver` — assign `billNo` via `Counter.getNextInvoiceNumber()`, compute `prevBalance`,
-    write the `Transaction` row, then `applyBillStock(pendingBill, deliveredBill, …)`.
-  - `POST /api/bills/:id/cancel` — `applyBillStock(bill, cancelledBill, …)`.
-  - Frontend: a status toggle in `BillModal`, an "Orders / Pending" list, and an edit view.
+- [x] **Pending / Delivered editable orders + one-open-order-per-agency** *(done 2026-07-12)* — see Phase 12.
 - [ ] **User Management Page** (owner only): List all users, change roles, deactivate accounts → `GET/PATCH /api/users`
 - [ ] **Orders Implementation**: Full backend CRUD + frontend UI for the Orders module
 - [ ] **Vehicles Module**: Model, routes, and UI for managing delivery vehicles
@@ -728,6 +758,20 @@ from the agency balance via `balanceBearingBills()`), which is exactly what make
 cancelled order from leaving a gap in the GST series. `dashboard.service` and `reports.service` were both updated to
 exclude pending/cancelled bills, or a pending order would have silently inflated revenue. Verified end-to-end against
 a throwaway database: 20/20 checks incl. the invariant that delivering a pending order leaves `available` unchanged.*
+
+*Order-first billing: 2026-07-12 — bills are now ORDER-FIRST. `POST /api/bills` creates a `pending` order:
+it reserves stock but books no money and carries no invoice number, and stays editable until delivered.
+`PATCH /:id` (revision-checked), `POST /:id/deliver` (burns the invoice number, snapshots prevBalance, writes
+the Transaction, ships the stock) and `POST /:id/cancel` (releases the commitment) all route through the one
+`applyBillStock(prev, next)` diff engine built the day before — which is exactly why they were thin to add.
+**An agency may hold only ONE open order at a time**, enforced by a partial unique index
+(`{agencyId} where status:"pending"`) rather than a service check alone, because a check alone is a race —
+verified by firing two concurrent creates and confirming exactly one won. Optimistic locking via `Bill.revision`
+stops a concurrent edit computing its stock delta from a stale baseline. Frontend: `computeBalance` now excludes
+pending/cancelled bills (it would otherwise disagree with the server's prevBalance), BillModal looks up the
+agency's open order the moment the agency is picked and offers Edit / Deliver / Cancel inline, and the Billing
+page gained a Pending Orders section. Verified with 26 service-level checks, then 10 live HTTP checks against
+the running server (incl. real PDF generation); the test invoice was removed and the DB restored via reconcile.*
 
 *Last Updated: 2026-07-12 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
 *Cleanup pass: 2026-07-10 — removed Firebase remnants, dead scripts, unused packages; added Prettier/ESLint; updated repo structure docs.*

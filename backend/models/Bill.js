@@ -160,6 +160,29 @@ billSchema.index(
   }
 );
 
+// ── ONE PENDING ORDER PER AGENCY ─────────────────────────────────────────────
+// An agency may hold at most one open (pending) order at a time. It must be delivered
+// or cancelled before another can be taken.
+//
+// This is enforced HERE, in the database, and not only by a check in the service. A
+// service-level check alone is a race: two clerks hitting Save in the same instant would
+// both read "no pending order exists" and both insert one. A partial unique index makes
+// the second insert physically impossible.
+//
+// Unique only among PENDING bills — an agency can still have unlimited delivered and
+// cancelled bills, which is why partialFilterExpression is essential here.
+//
+// bill.service.js pre-checks this anyway, purely so the user gets a useful message
+// (with the offending order attached) instead of a raw E11000 duplicate-key error.
+billSchema.index(
+  { agencyId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: BILL_STATUS.PENDING },
+    name: "one_pending_bill_per_agency",
+  }
+);
+
 // Compound { agencyId, createdAt } follows the Equality→Range rule: it serves both
 // agency-scoped balance lookups AND the reports aggregation's "agency X within a
 // date range" match. Its agencyId prefix also covers agency-only queries, so a

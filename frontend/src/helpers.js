@@ -26,10 +26,26 @@ export function getCurrentFY() {
 }
 
 // ── Balance helpers ───────────────────────────────────────────────────────────
+// Which bills count as real money. Mirrors balanceBearingBills() in the backend's
+// constants/index.js — the two MUST agree, or the balance shown here will disagree with
+// the prevBalance the server snapshots onto the invoice.
+//
+// A `pending` bill is an ORDER: it reserves stock but books no money until it is delivered.
+// A `cancelled` one books none either. Counting a pending order here would overstate every
+// agency's outstanding balance and every new bill's carried-forward amount.
+//
+// Legacy bills predating the lifecycle have NO status field at all — `undefined` is not in
+// the excluded set, so they still count. That is deliberate, and matches the backend's $nin.
+const EXCLUDED_FROM_BALANCE = ["pending", "cancelled"];
+
+export function isBalanceBearing(bill) {
+  return !EXCLUDED_FROM_BALANCE.includes(bill?.status);
+}
+
 export function computeBalance(agencyId, bills, payments) {
   const id = String(agencyId);
   const billed = bills
-    .filter(b => String(b.agencyId) === id)
+    .filter(b => String(b.agencyId) === id && isBalanceBearing(b))
     .reduce((s, b) => s + (b.total || 0), 0);
   const paid = payments
     .filter(p => String(p.agencyId) === id)

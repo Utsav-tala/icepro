@@ -11,16 +11,42 @@ const C = {
 
 const DEFAULT_DISC = 14;
 
-export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, currentUser, bills = [], payments = [], products = [], appSettings }) {
-  const [agencyId,   setAgencyId]   = useState(preAgencyId || "");
-  const [notes,      setNotes]      = useState("");
-  const [lockedItems,setLockedItems]= useState([]);
+// ── Create or edit an ORDER ───────────────────────────────────────────────────
+// Bills are now order-first. Saving here creates a `pending` order: it reserves stock but
+// books NO money and carries NO invoice number until it is delivered. That is what makes it
+// editable — with nothing financial booked against it, changing its items cannot corrupt
+// any balance or any later invoice's carried-forward amount.
+//
+// An agency may hold only ONE open order at a time. Rather than letting someone type out a
+// whole bill and only then rejecting it, we look up the agency's open order the instant they
+// pick the agency, and show it with its actions.
+//
+// `editOrder` — pass a pending bill to open this modal in edit mode instead of create mode.
+export function CreateBillModal({ agencies, onClose, onSaved, onEditOrder, preAgencyId, editOrder = null, currentUser, bills = [], payments = [], products = [], appSettings }) {
+  const [agencyId,   setAgencyId]   = useState(editOrder?.agencyId || preAgencyId || "");
+  const [notes,      setNotes]      = useState(editOrder?.notes || "");
+  const [lockedItems,setLockedItems]= useState(
+    (editOrder?.items || []).map(it => ({
+      productId: it.productId ? String(it.productId) : undefined,
+      name: it.name, qty: String(it.qty), rate: it.rate, disc: it.disc ?? 0, amount: it.amount,
+    }))
+  );
   const [loading,    setLoading]    = useState(false);
   const [err,        setErr]        = useState("");
   const [saved,      setSaved]      = useState(null);
 
+  // ── The agency's existing open order (blocks creating a second one) ──────────
+  const [openOrder,    setOpenOrder]    = useState(null);
+  const [checkingOpen, setCheckingOpen] = useState(false);
+  const [actioning,    setActioning]    = useState("");   // "deliver" | "cancel" | ""
+
+  // In edit mode we are editing THAT order, so it must not also be reported as a blocker.
+  const isEdit   = !!editOrder;
+  const editId   = editOrder?._id || editOrder?.id;
+  const revision = editOrder?.revision;
+
   // ── Bill type: "gst" = VMP series (TAX INVOICE), "nongst" = GB series (INVOICE)
-  const [billType, setBillType] = useState("nongst");
+  const [billType, setBillType] = useState(editOrder?.billType || "nongst");
 
   // Active search row state
   const [searchQ,   setSearchQ]   = useState("");
@@ -37,6 +63,53 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
   const dropRef   = useRef(null);
 
   useEffect(() => { setTimeout(() => searchRef.current?.focus(), 120); }, []);
+
+  // ── Does this agency already have an open order? ────────────────────────────
+  // Checked as soon as the agency is picked, so the user is stopped BEFORE typing out a
+  // bill that would only be rejected. The server enforces this regardless (a partial unique
+  // index — see models/Bill.js); this is purely so the block is friendly and actionable.
+  useEffect(() => {
+    if (!agencyId || isEdit) { setOpenOrder(null); return; }
+
+    let alive = true;
+    setCheckingOpen(true);
+    api.get(`/bills/open/${agencyId}`)
+      .then(res => { if (alive) setOpenOrder(res.success ? res.data.bill : null); })
+      .catch(()  => { if (alive) setOpenOrder(null); })
+      .finally(() => { if (alive) setCheckingOpen(false); });
+
+    return () => { alive = false; };
+  }, [agencyId, isEdit]);
+
+  // Deliver the blocking order — it becomes a real invoice and frees the agency's slot.
+  async function deliverOpenOrder() {
+    const id = openOrder?._id || openOrder?.id;
+    if (!id) return;
+    setActioning("deliver"); setErr("");
+    try {
+      const res = await api.post(`/bills/${id}/deliver`);
+      if (onSaved) onSaved();
+      setOpenOrder(null);
+      setSaved({ bill: res.data.bill, agency: agencies.find(a => a.id === agencyId), delivered: true });
+    } catch (e) {
+      setErr(e.message || "Could not deliver the order.");
+    } finally { setActioning(""); }
+  }
+
+  // Cancel the blocking order — releases its stock commitment and frees the slot.
+  async function cancelOpenOrder() {
+    const id = openOrder?._id || openOrder?.id;
+    if (!id) return;
+    if (!window.confirm("Cancel this pending order? Its reserved stock will be released.")) return;
+    setActioning("cancel"); setErr("");
+    try {
+      await api.post(`/bills/${id}/cancel`, { reason: "Replaced by a new order" });
+      if (onSaved) onSaved();
+      setOpenOrder(null);   // slot is free — the form below unlocks
+    } catch (e) {
+      setErr(e.message || "Could not cancel the order.");
+    } finally { setActioning(""); }
+  }
 
   const catalog  = products.length > 0 ? products : [];
   const filtered = searchQ.trim().length > 0
@@ -157,92 +230,154 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
 
   async function handleSave() {
     if (!agencyId)                return setErr("Please select an agency.");
+    if (openOrder)                return setErr("Deliver, edit or cancel this agency's open order first.");
     if (lockedItems.length === 0) return setErr("Add at least one item.");
-    if (billAmt === 0)            return setErr("Bill total cannot be Rs. 0.");
+    if (billAmt === 0)            return setErr("Order total cannot be Rs. 0.");
     setLoading(true);
     setErr("");
     try {
-      const payload = {
-        agencyId,
-        billType,
-        items: lockedItems,
-        discountAmt: totalDiscAmt,
-        notes
-      };
+      const payload = { agencyId, billType, items: lockedItems, notes };
 
-      const res = await api.post("/bills", payload);
-      if (res.success && res.data && res.data.bill) {
-        setSaved({
-          bill: res.data.bill,
-          agency,
-        });
+      // Edit sends the revision it read. If someone else changed the order in the meantime
+      // the server rejects with 409 — without that, this edit's stock delta would be computed
+      // from a stale baseline and would permanently corrupt the ledger.
+      const res = isEdit
+        ? await api.patch(`/bills/${editId}`, { ...payload, revision })
+        : await api.post("/bills", payload);
+
+      if (res.success && res.data?.bill) {
+        setSaved({ bill: res.data.bill, agency });
         if (onSaved) onSaved();
       } else {
-        setErr(res.message || "Failed to save bill.");
+        setErr(res.message || "Failed to save the order.");
       }
     } catch (e) {
-      console.error(e);
-      setErr(e.message || "Failed to save bill. Please try again.");
+      // 409 on create = the agency won its one open-order slot in a concurrent request.
+      // Re-fetch it so the blocking panel appears with its actions rather than a dead error.
+      if (e.statusCode === 409 && !isEdit) {
+        try {
+          const open = await api.get(`/bills/open/${agencyId}`);
+          if (open.success && open.data.bill) setOpenOrder(open.data.bill);
+        } catch { /* fall through to the message below */ }
+      }
+      setErr(e.message || "Failed to save the order. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
   // ── Success screen ────────────────────────────────────────────────────────
-  if (saved) return (
-    <Modal title="✅ Bill Created!" onClose={onClose}>
-      <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
-        <div style={{ fontSize: 56, marginBottom: 8 }}>🧾</div>
-        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: C.redDark, marginBottom: 4 }}>{saved.bill.billNo}</div>
-        <div style={{ fontSize: 14, color: C.textLight, marginBottom: 4 }}>{saved.bill.agencyName}</div>
-        {/* Bill type badge */}
-        <div style={{ marginBottom: 12 }}>
-          {saved.bill.billType === "gst"
-            ? <span style={{ background: "#ecfdf5", color: "#065f46", border: "1px solid #a7f3d0", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>✓ GST Invoice (TAX INVOICE)</span>
-            : <span style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>📄 Non-GST Invoice (INVOICE)</span>
-          }
-        </div>
-        <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, textAlign: "left" }}>
-          {saved.bill.discountAmt > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "#065f46" }}>
-              <span>Discount Saved</span><span style={{ fontWeight: 700 }}>- Rs. {saved.bill.discountAmt.toFixed(2)}</span>
-            </div>
-          )}
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
-            <span style={{ color: C.textLight }}>Current Bill</span><span style={{ fontWeight: 700 }}>Rs. {billAmt.toLocaleString()}</span>
+  // A pending ORDER and a delivered INVOICE are genuinely different things and get
+  // genuinely different screens. An order has no invoice number and nothing to print;
+  // showing it in an invoice frame would be a lie.
+  if (saved) {
+    const b = saved.bill;
+    const isPending = b.status === "pending";
+
+    if (isPending) return (
+      <Modal title={isEdit ? "✅ Order Updated" : "✅ Order Created"} onClose={onClose}>
+        <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
+          <div style={{ fontSize: 56, marginBottom: 8 }}>📋</div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, marginBottom: 4 }}>
+            {b.agencyName}
           </div>
-          {saved.bill.prevBalance > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: C.red }}>
-              <span>Previous Pending Balance</span><span style={{ fontWeight: 700 }}>+ Rs. {saved.bill.prevBalance.toLocaleString()}</span>
+          <div style={{ marginBottom: 14 }}>
+            <span style={{ background: "#fffbeb", color: "#b45309", border: "1px solid #fcd34d", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>
+              ⏳ PENDING DELIVERY
+            </span>
+          </div>
+
+          <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 18px", marginBottom: 14, textAlign: "left" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+              <span style={{ color: C.textLight }}>{b.items?.length || 0} item(s)</span>
+              <span style={{ fontWeight: 700 }}>{(b.items || []).reduce((s, i) => s + Number(i.qty || 0), 0)} boxes</span>
             </div>
-          )}
-          {saved.bill.advanceUsed > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: "#065f46" }}>
-              <span>Advance Credit Used</span><span style={{ fontWeight: 700 }}>- Rs. {saved.bill.advanceUsed.toLocaleString()}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, padding: "8px 0 0", marginTop: 4, borderTop: `2px solid ${C.border}` }}>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.text }}>Order Value</span>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.red }}>Rs. {(b.total || 0).toLocaleString()}</span>
             </div>
-          )}
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, padding: "8px 0 0", marginTop: 4, borderTop: `2px solid ${C.border}` }}>
-            <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.text }}>Total Due</span>
-            <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.red }}>Rs. {grandTotal.toLocaleString()}</span>
+          </div>
+
+          {/* Say plainly what has and has NOT happened — this is the part people get wrong. */}
+          <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 12, color: "#1e40af", textAlign: "left" }}>
+            <div style={{ fontWeight: 800, marginBottom: 4 }}>Stock is reserved. No invoice yet.</div>
+            This order has <strong>no invoice number</strong> and does <strong>not</strong> count toward
+            the agency's balance. Both happen when you deliver it — which is also when it stops being
+            editable. Until then, you can change it freely.
+          </div>
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+            <button className="btn btn-ghost" onClick={onClose}>Done</button>
           </div>
         </div>
-        <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Database</div>
-        <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          <PrintBillButton bill={saved.bill} label="Print / Save PDF" style={{ fontSize: 13, padding: "10px 20px" }} />
-          <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency, appSettings)}>💬 WhatsApp</button>
-          <button className="btn btn-ghost" onClick={onClose}>Close</button>
+      </Modal>
+    );
+
+    // Delivered → a real invoice.
+    return (
+      <Modal title="✅ Delivered — Invoice Issued" onClose={onClose}>
+        <div style={{ textAlign: "center", padding: "10px 0 20px" }}>
+          <div style={{ fontSize: 56, marginBottom: 8 }}>🧾</div>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 24, color: C.redDark, marginBottom: 4 }}>{b.billNo}</div>
+          <div style={{ fontSize: 14, color: C.textLight, marginBottom: 4 }}>{b.agencyName}</div>
+          <div style={{ marginBottom: 12 }}>
+            {b.billType === "gst"
+              ? <span style={{ background: "#ecfdf5", color: "#065f46", border: "1px solid #a7f3d0", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>✓ GST Invoice (TAX INVOICE)</span>
+              : <span style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 20, fontSize: 11, fontWeight: 800, padding: "3px 12px" }}>📄 Non-GST Invoice (INVOICE)</span>
+            }
+          </div>
+          <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 18px", marginBottom: 16, textAlign: "left" }}>
+            {b.discountAmt > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", color: "#065f46" }}>
+                <span>Discount Saved</span><span style={{ fontWeight: 700 }}>- Rs. {b.discountAmt.toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0" }}>
+              <span style={{ color: C.textLight }}>Current Bill</span><span style={{ fontWeight: 700 }}>Rs. {(b.total || 0).toLocaleString()}</span>
+            </div>
+            {b.prevBalance > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: C.red }}>
+                <span>Previous Pending Balance</span><span style={{ fontWeight: 700 }}>+ Rs. {b.prevBalance.toLocaleString()}</span>
+              </div>
+            )}
+            {b.advanceUsed > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", color: "#065f46" }}>
+                <span>Advance Credit Used</span><span style={{ fontWeight: 700 }}>- Rs. {b.advanceUsed.toLocaleString()}</span>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, padding: "8px 0 0", marginTop: 4, borderTop: `2px solid ${C.border}` }}>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.text }}>Total Due</span>
+              <span style={{ fontFamily: "'Playfair Display',serif", fontWeight: 800, color: C.red }}>Rs. {(b.grandTotal || 0).toLocaleString()}</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+            <PrintBillButton bill={b} label="Print / Save PDF" style={{ fontSize: 13, padding: "10px 20px" }} />
+            <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(b, saved.agency, appSettings)}>💬 WhatsApp</button>
+            <button className="btn btn-ghost" onClick={onClose}>Close</button>
+          </div>
         </div>
-      </div>
-    </Modal>
-  );
+      </Modal>
+    );
+  }
 
   // Column layout
   const COLS = "1fr 60px 80px 55px 95px 28px";
 
   return (
-    <Modal title="🧾 Create New Bill" onClose={onClose} wide>
+    <Modal title={isEdit ? "✏️ Edit Order" : "📋 New Order"} onClose={onClose} wide>
+
+      {/* Set expectations up front. "Create Bill" used to mint an invoice on the spot;
+          it now takes an order, and the invoice comes at delivery. */}
+      {!openOrder && (
+        <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "9px 14px", marginBottom: 16, fontSize: 12, color: "#1e40af" }}>
+          📋 This creates an <strong>order</strong> — stock is reserved, but no invoice number is
+          issued and nothing is added to the agency's balance until you <strong>deliver</strong> it.
+          It stays editable until then.
+        </div>
+      )}
 
       {/* ── Bill Type Toggle — GST / Non-GST ── */}
+      {!openOrder && (
       <div style={{ marginBottom: 18 }}>
         <Lbl>Bill Type</Lbl>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -288,25 +423,83 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
           ))}
         </div>
       </div>
+      )}
 
-      {/* Agency selector */}
+      {/* Agency selector — locked in edit mode; an order cannot change hands. */}
       <div style={{ marginBottom: 14 }}>
         <Lbl>Select Agency *</Lbl>
-        <select className="sel" value={agencyId} onChange={e => { setAgencyId(e.target.value); setErr(""); }}>
+        <select className="sel" value={agencyId} disabled={isEdit}
+          onChange={e => { setAgencyId(e.target.value); setErr(""); }}>
           <option value="">-- Choose Agency --</option>
           {agencies.map(a => <option key={a.id} value={a.id}>{a.name} — {a.city}</option>)}
         </select>
+        {checkingOpen && (
+          <div style={{ fontSize: 11, color: C.textLight, marginTop: 5 }}>
+            <Spin /> Checking for an open order…
+          </div>
+        )}
       </div>
 
-      {/* Balance alerts */}
+      {/* ── ONE OPEN ORDER PER AGENCY ────────────────────────────────────────
+          This agency already has a pending order, so a second one cannot be created.
+          Rather than a dead-end error, show the order and its three ways out. Editing it
+          is almost always what the user actually wants — it beats cancelling and retyping. */}
+      {openOrder && (
+        <div style={{ background: "#fff0f0", border: `1px solid ${C.red}`, borderLeft: `4px solid ${C.red}`, borderRadius: 12, padding: "16px 18px", marginBottom: 16 }}>
+          <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 16, fontWeight: 800, color: C.redDark, marginBottom: 4 }}>
+            ⛔ This agency already has a pending order
+          </div>
+          <div style={{ fontSize: 12, color: C.textMid, marginBottom: 12 }}>
+            <strong>{openOrder.agencyName}</strong> can only hold one open order at a time.
+            Deliver it, edit it, or cancel it before creating a new one.
+          </div>
+
+          <div style={{ background: "#fff", border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+            {(openOrder.items || []).map((it, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "2px 0", color: C.textMid }}>
+                <span>{it.name}</span>
+                <span style={{ fontWeight: 700 }}>{it.qty} × Rs.{it.rate}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, paddingTop: 6, marginTop: 6, borderTop: `1px dashed ${C.border}` }}>
+              <span style={{ color: C.textLight }}>
+                Ordered {new Date(openOrder.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}
+              </span>
+              <span style={{ fontWeight: 800, color: C.redDark }}>Rs. {(openOrder.total || 0).toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="btn btn-red" style={{ fontSize: 12, padding: "8px 14px" }}
+              disabled={!!actioning || !onEditOrder}
+              onClick={() => onEditOrder?.(openOrder)}>
+              ✏️ Edit this order
+            </button>
+            <button className="btn btn-green" style={{ fontSize: 12, padding: "8px 14px" }}
+              disabled={!!actioning} onClick={deliverOpenOrder}>
+              {actioning === "deliver" ? <><Spin /> Delivering…</> : "🚚 Deliver it now"}
+            </button>
+            <button className="btn btn-ghost" style={{ fontSize: 12, padding: "8px 14px" }}
+              disabled={!!actioning} onClick={cancelOpenOrder}>
+              {actioning === "cancel" ? <><Spin /> Cancelling…</> : "🗑️ Cancel it"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!openOrder && (<>
+
+      {/* Balance alerts. Wording matters here: on an ORDER the balance is NOT applied yet —
+          the server snapshots it at delivery. Saying "will be added to this bill" would be
+          a lie about what is happening right now. */}
       {agencyId && prevBal > 0 && (
         <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderLeft: "4px solid #ffc107", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
-          ⚠️ This agency has <strong>Rs. {prevBal.toLocaleString()}</strong> pending — it will be added to this bill's total.
+          ⚠️ This agency has <strong>Rs. {prevBal.toLocaleString()}</strong> outstanding — it will be carried onto the invoice <strong>when this order is delivered</strong>.
         </div>
       )}
       {agencyId && rawBal < 0 && (
         <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderLeft: "4px solid #10b981", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "#065f46" }}>
-          This agency has <strong>Rs. {advanceUsed.toLocaleString()}</strong> advance credit — it will be deducted from this bill's total.
+          This agency has <strong>Rs. {advanceUsed.toLocaleString()}</strong> advance credit — it will be deducted <strong>when this order is delivered</strong>.
         </div>
       )}
       {products.length === 0 && (
@@ -460,7 +653,10 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
         <input className="inp" placeholder="Festival stock, special order..." value={notes} onChange={e => setNotes(e.target.value)} />
       </div>
 
-      {/* Totals breakdown */}
+      {/* Totals breakdown. The headline figure is the ORDER TOTAL — the agency's outstanding
+          balance is deliberately NOT rolled into it, because an order books no money. The
+          server computes the true grand total at delivery, against the balance as it stands
+          THEN (which may have changed by the time the boxes actually go out). */}
       <div style={{ background: "#fff8f8", borderRadius: 12, border: `1px solid ${C.border}`, padding: "14px 18px", marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, borderBottom: `1px dashed ${C.border}` }}>
           <span style={{ color: C.textLight }}>Gross Total (before discount)</span>
@@ -472,36 +668,33 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
             <span style={{ fontWeight: 700 }}>- Rs. {totalDiscAmt.toFixed(2)}</span>
           </div>
         )}
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, borderBottom: (prevBal > 0 || advanceUsed > 0) ? `1px dashed ${C.border}` : "none" }}>
-          <span style={{ color: C.textLight }}>Current Bill Amount</span>
-          <span style={{ fontWeight: 700 }}>Rs. {billAmt.toLocaleString()}</span>
-        </div>
-        {prevBal > 0 && (
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, borderBottom: `1px dashed ${C.border}`, color: C.red }}>
-            <span style={{ fontWeight: 700 }}>Previous Pending Balance</span>
-            <span style={{ fontWeight: 700 }}>+ Rs. {prevBal.toLocaleString()}</span>
-          </div>
-        )}
-        {advanceUsed > 0 && (
-          <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13, borderBottom: `1px dashed ${C.border}`, color: "#065f46" }}>
-            <span style={{ fontWeight: 700 }}>Advance Credit Applied</span>
-            <span style={{ fontWeight: 700 }}>- Rs. {advanceUsed.toLocaleString()}</span>
-          </div>
-        )}
         <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0", marginTop: 4, borderTop: `2px solid ${C.border}` }}>
-          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 17, fontWeight: 800, color: C.text }}>Grand Total</span>
-          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 800, color: C.red }}>Rs. {grandTotal.toLocaleString()}</span>
+          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 17, fontWeight: 800, color: C.text }}>Order Total</span>
+          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, fontWeight: 800, color: C.red }}>Rs. {billAmt.toLocaleString()}</span>
         </div>
-        <div style={{ fontSize: 11, color: C.textLight, marginTop: 6, fontStyle: "italic" }}>{toWords(grandTotal)}</div>
+        <div style={{ fontSize: 11, color: C.textLight, marginTop: 6, fontStyle: "italic" }}>{toWords(billAmt)}</div>
+
+        {(prevBal > 0 || advanceUsed > 0) && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}`, fontSize: 11, color: C.textLight }}>
+            {prevBal > 0 && <>Previous balance of <strong>Rs. {prevBal.toLocaleString()}</strong> will be added at delivery — invoice total ≈ Rs. {grandTotal.toLocaleString()}.</>}
+            {advanceUsed > 0 && <>Advance credit of <strong>Rs. {advanceUsed.toLocaleString()}</strong> will be deducted at delivery — invoice total ≈ Rs. {grandTotal.toLocaleString()}.</>}
+          </div>
+        )}
       </div>
 
       {err && <div className="err-box">⚠️ {err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
         <button className="btn btn-red" style={{ flex: 1, padding: 12 }} onClick={handleSave} disabled={loading}>
-          {loading ? <><Spin /> Generating bill number...</> : `💾 Create Bill${lockedItems.length > 0 ? ` (${lockedItems.length} items)` : ""}`}
+          {loading
+            ? <><Spin /> Saving…</>
+            : isEdit
+              ? `💾 Update Order${lockedItems.length > 0 ? ` (${lockedItems.length} items)` : ""}`
+              : `📋 Create Order${lockedItems.length > 0 ? ` (${lockedItems.length} items)` : ""}`}
         </button>
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
       </div>
+
+      </>)}
     </Modal>
   );
 }
