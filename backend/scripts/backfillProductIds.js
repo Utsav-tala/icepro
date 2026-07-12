@@ -31,6 +31,47 @@ const Bill     = require("../models/Bill");
 const Product  = require("../models/Product");
 const { BILL_STATUS } = require("../constants");
 
+// ── Step 0: make the inventory fields physically exist on Product ─────────────
+// A Mongoose schema `default: 0` is applied only when a NEW document is created — it
+// never writes the field into documents that already exist. Mongoose hides this on
+// reads (it fills the default in on hydration), so JS-side code looks fine. But any
+// raw aggregation ($expr, $match, $group) bypasses Mongoose completely and sees the
+// field as MISSING, which evaluates to null — and in BSON sort order null < 0 is TRUE.
+// That made every product look like a stock shortfall. Write the fields for real.
+const ensureInventoryFields = async () => {
+  console.log("\n── Step 0: inventory fields on Product ───────────────────────");
+
+  const missing = await Product.countDocuments({
+    $or: [
+      { onHand:            { $exists: false } },
+      { committed:         { $exists: false } },
+      { lowStockThreshold: { $exists: false } },
+    ],
+  });
+
+  if (missing === 0) {
+    console.log("   ✓ Every product already has onHand / committed / lowStockThreshold.");
+    return;
+  }
+
+  console.log(`   • ${missing} product(s) are missing one or more inventory fields.`);
+  console.log("     Raw aggregations (e.g. the shortfall query) read a missing field as");
+  console.log("     null, and null < 0 is true in BSON — so they would ALL report as short.");
+
+  if (!COMMIT) {
+    console.log("   [dry run] would set the missing fields to 0");
+    return;
+  }
+
+  // $exists filters are per-field so an existing non-zero count is never clobbered.
+  const [a, b, c] = await Promise.all([
+    Product.updateMany({ onHand:            { $exists: false } }, { $set: { onHand: 0 } }),
+    Product.updateMany({ committed:         { $exists: false } }, { $set: { committed: 0 } }),
+    Product.updateMany({ lowStockThreshold: { $exists: false } }, { $set: { lowStockThreshold: 0 } }),
+  ]);
+  console.log(`   ✓ onHand: ${a.modifiedCount} · committed: ${b.modifiedCount} · lowStockThreshold: ${c.modifiedCount}`);
+};
+
 const COMMIT = process.argv.includes("--commit");
 
 // Same normalization on both sides of the match: trim, collapse inner whitespace, lowercase.
@@ -189,6 +230,7 @@ const run = async () => {
     : "\n*** DRY RUN — nothing will be written. Re-run with --commit to apply. ***");
 
   try {
+    await ensureInventoryFields();
     await swapBillNoIndex();
     await stampStatus();
     await backfillProductIds();

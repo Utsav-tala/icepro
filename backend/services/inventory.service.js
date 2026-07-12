@@ -273,9 +273,16 @@ const getStock = async (query = {}) => {
 // waiting on them. This is what pins to the top of the Inventory page so the shortfall
 // is noticed at production time.
 const getShortfalls = async () => {
-  const products = await Product.find({
-    $expr: { $lt: [{ $subtract: ["$onHand", "$committed"] }, 0] },
-  }).sort({ name: 1 });
+  // $ifNull is NOT optional here. A $expr runs as raw MongoDB aggregation and bypasses
+  // Mongoose entirely, so schema defaults do not apply: any product document written
+  // before these fields existed has NO `onHand`/`committed` key at all. Without the
+  // coalesce, $subtract sees a missing field as null and returns null — and in BSON sort
+  // order null < 0 is TRUE, so every product would be reported as a shortfall.
+  const available = {
+    $subtract: [{ $ifNull: ["$onHand", 0] }, { $ifNull: ["$committed", 0] }],
+  };
+
+  const products = await Product.find({ $expr: { $lt: [available, 0] } }).sort({ name: 1 });
 
   if (products.length === 0) return [];
 
