@@ -51,6 +51,9 @@ body{font-family:'Nunito',sans-serif;}
 .btn-yellow:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(245,197,24,0.35);}
 .btn-green{background:linear-gradient(135deg,#25D366,#128C7E);color:#fff;box-shadow:0 6px 16px rgba(37,211,102,0.25);}
 .btn-green:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(37,211,102,0.35);}
+.btn-blue{background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;box-shadow:0 6px 16px rgba(37,99,235,0.25);}
+.btn-blue:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(37,99,235,0.35);}
+.btn-blue:disabled{opacity:0.6;cursor:not-allowed;transform:none;box-shadow:none;}
 .btn-ghost{background:#fff5f5;color:#6b3333;border:1px solid #f0dada;}
 .btn-ghost:hover{background:#fef2f2;color:#c8181e;border-color:#e03535;}
 .btn-danger{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;}

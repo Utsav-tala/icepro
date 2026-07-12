@@ -1,8 +1,8 @@
 // src/components/BillModal.js
 import { useState, useRef, useEffect } from "react";
 import api from "../api";
-import { toWords, printInvoice, shareWhatsApp, computeBalance } from "../helpers";
-import { Lbl, Modal, Spin } from "./UI";
+import { toWords, shareWhatsApp, computeBalance } from "../helpers";
+import { Lbl, Modal, Spin, PrintBillButton } from "./UI";
 
 const C = {
   red: "#c8181e", redDark: "#9e1015", yellow: "#f5c518",
@@ -61,7 +61,12 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
     const d     = Number(disc) >= 0 ? Number(disc) : DEFAULT_DISC;
     const gross = Number(qty) * r;
     const amt   = gross * (1 - d / 100);
-    setLockedItems(p => [...p, { name: pickedItem.name, qty: String(qty), rate: r, disc: d, amount: amt }]);
+    // productId is the hard catalog link the inventory engine needs — without it the
+    // line moves no stock, since matching on a free-text name is far too fragile.
+    setLockedItems(p => [...p, {
+      productId: pickedItem._id || pickedItem.id,
+      name: pickedItem.name, qty: String(qty), rate: r, disc: d, amount: amt,
+    }]);
     setSearchQ(""); setPickedItem(null); setQty(""); setRate(""); setDisc(""); setDropOpen(false); setDropIndex(-1);
     setTimeout(() => searchRef.current?.focus(), 50);
   }
@@ -115,6 +120,40 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
 
   const previewGross = pickedItem && qty ? Number(qty) * Number(rate) : 0;
   const previewAmt   = previewGross * (1 - (Number(disc) || 0) / 100);
+
+  // ── Live stock awareness ────────────────────────────────────────────────────
+  // `products` already carries onHand/committed/available — Product exposes `available`
+  // as a virtual, so GET /api/products returns it with no extra request.
+  //
+  // Nothing here BLOCKS a bill. Billing beyond stock is deliberate and expected: the
+  // resulting negative `available` is exactly how a shortfall reaches the production
+  // team via the Inventory page. We only surface the number so whoever is taking the
+  // order knows what they are promising.
+  const lockedQtyFor = (productId) =>
+    lockedItems
+      .filter(it => it.productId === productId)
+      .reduce((s, it) => s + (Number(it.qty) || 0), 0);
+
+  // Availability net of what is already sitting in this unsaved bill — otherwise adding
+  // the same product twice would each show the full stock and understate the shortfall.
+  const availableFor = (prod) => {
+    const id = prod?._id || prod?.id;
+    if (!id || prod.available == null) return null;
+    return prod.available - lockedQtyFor(id);
+  };
+
+  const pickedAvail = availableFor(pickedItem);
+  const afterThis   = pickedAvail != null && qty ? pickedAvail - Number(qty) : null;
+
+  // Every locked line that this bill pushes into shortfall.
+  const shortLines = lockedItems.reduce((acc, it) => {
+    const prod = products.find(p => (p._id || p.id) === it.productId);
+    if (!prod || prod.available == null) return acc;
+    if (acc.some(a => a.productId === it.productId)) return acc;   // one entry per product
+    const remaining = prod.available - lockedQtyFor(it.productId);
+    if (remaining < 0) acc.push({ productId: it.productId, name: prod.name, short: Math.abs(remaining) });
+    return acc;
+  }, []);
 
   async function handleSave() {
     if (!agencyId)                return setErr("Please select an agency.");
@@ -189,7 +228,7 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
         </div>
         <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 16px", marginBottom: 20, fontSize: 13, color: "#065f46" }}>✓ Saved to Database</div>
         <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
-          <button className="btn btn-red"   style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => printInvoice(saved.bill, saved.agency, appSettings)}>🖨️ Print / PDF</button>
+          <PrintBillButton bill={saved.bill} label="Print / Save PDF" style={{ fontSize: 13, padding: "10px 20px" }} />
           <button className="btn btn-green" style={{ fontSize: 13, padding: "10px 20px" }} onClick={() => shareWhatsApp(saved.bill, saved.agency, appSettings)}>💬 WhatsApp</button>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
         </div>
@@ -323,14 +362,27 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
                 />
                 {dropOpen && filtered.length > 0 && (
                   <div className="idrop" ref={dropRef}>
-                    {filtered.map((p, idx) => (
-                      <div key={p.id} className="iopt"
-                        style={{ background: idx === dropIndex ? "#fff0f0" : undefined }}
-                        onMouseDown={() => pickItem(p)}>
-                        <div className="iopt-name">{p.name}</div>
-                        <div className="iopt-rate">Rs. {p.rate} / box &nbsp;·&nbsp; {p.discount ?? DEFAULT_DISC}% disc</div>
-                      </div>
-                    ))}
+                    {filtered.map((p, idx) => {
+                      const avail = availableFor(p);
+                      return (
+                        <div key={p.id} className="iopt"
+                          style={{ background: idx === dropIndex ? "#fff0f0" : undefined }}
+                          onMouseDown={() => pickItem(p)}>
+                          <div className="iopt-name">{p.name}</div>
+                          <div className="iopt-rate">
+                            Rs. {p.rate} / box &nbsp;·&nbsp; {p.discount ?? DEFAULT_DISC}% disc
+                            {avail != null && (
+                              <>
+                                {" "}&nbsp;·&nbsp;
+                                <span style={{ fontWeight: 800, color: avail > 0 ? "#065f46" : C.red }}>
+                                  {avail > 0 ? `${avail} in stock` : `${Math.abs(avail)} short`}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 {dropOpen && searchQ.trim().length > 0 && filtered.length === 0 && (
@@ -359,6 +411,19 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
             </div>
           </div>
 
+          {/* Live availability for the line currently being entered. */}
+          {pickedItem && pickedAvail != null && (
+            <div style={{ padding: "6px 14px", background: "#fff", borderTop: `1px dashed ${C.border}`, fontSize: 11, color: C.textLight }}>
+              <strong style={{ color: pickedAvail > 0 ? "#065f46" : C.red }}>{pickedAvail}</strong> available
+              {qty && Number(qty) > 0 && afterThis != null && (
+                <> &nbsp;→&nbsp; after this line:{" "}
+                  <strong style={{ color: afterThis < 0 ? C.red : "#065f46" }}>{afterThis}</strong>
+                  {afterThis < 0 && ` — ${Math.abs(afterThis)} short, production will be alerted`}
+                </>
+              )}
+            </div>
+          )}
+
           {lockedItems.length > 0 && (
             <div style={{ padding: "8px 14px", background: "#fef0f0", borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", borderRadius: "0 0 12px 12px" }}>
               <span style={{ fontSize: 11, color: C.textLight, fontWeight: 700 }}>{lockedItems.length} item{lockedItems.length > 1 ? "s" : ""} added</span>
@@ -367,6 +432,27 @@ export function CreateBillModal({ agencies, onClose, onSaved, preAgencyId, curre
           )}
         </div>
       </div>
+
+      {/* Stock shortfall notice — INFORMATIONAL ONLY, it never blocks the bill.
+          Taking an order you cannot yet fill is normal here: the shortfall is what
+          tells the production team what to make. This just makes sure the person
+          taking the order knows they are creating one. */}
+      {shortLines.length > 0 && (
+        <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderLeft: "4px solid #f59e0b", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
+          <div style={{ fontWeight: 800, color: "#b45309", marginBottom: 4 }}>
+            🏭 This bill goes beyond available stock
+          </div>
+          {shortLines.map(s => (
+            <div key={s.productId} style={{ fontSize: 12, color: C.textMid, padding: "1px 0" }}>
+              <strong>{s.name}</strong> — short by {s.short} box{s.short > 1 ? "es" : ""}
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: C.textLight, marginTop: 5 }}>
+            That's fine — the bill will go through, and the shortfall will show up on the
+            Inventory page so production knows what to make.
+          </div>
+        </div>
+      )}
 
       {/* Notes */}
       <div style={{ marginBottom: 14 }}>

@@ -1,7 +1,37 @@
 // src/components/UI.js
 // Shared tiny UI components used across the whole app
 
+import { useState } from "react";
+import { printBillPdf } from "../api";
+
 const LOGO_URL = "/logo.png";
+
+// ── Print Bill button ──────────────────────────────────────────────────────────
+// Opens the server-rendered invoice PDF for `bill` in a new tab, where the native
+// PDF viewer lets the user Print or Save. One button covers both.
+export function PrintBillButton({ bill, style, label = "Print", className = "btn btn-yellow" }) {
+  const [loading, setLoading] = useState(false);
+  const billId = bill?.id || bill?._id;
+
+  const handle = async (e) => {
+    e?.stopPropagation?.();
+    if (loading || !billId) return;
+    setLoading(true);
+    try {
+      await printBillPdf(billId);
+    } catch (err) {
+      alert(err?.message || "Could not open the PDF. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button className={className} style={style} onClick={handle} disabled={loading}>
+      {loading ? "⏳ …" : `🖨️ ${label}`}
+    </button>
+  );
+}
 
 export function Lbl({ children }) {
   return <label className="lbl">{children}</label>;

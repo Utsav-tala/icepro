@@ -14,6 +14,7 @@ const connectDB  = require("../config/database");
 const logger     = require("../utils/logger");
 const errorMiddleware = require("../middleware/error.middleware");
 const { globalLimiter } = require("../middleware/rateLimiter.middleware");
+const pdfService = require("../services/pdf.service");
 
 // ── Route imports ─────────────────────────────────────────────────────────────
 const authRoutes      = require("../routes/auth.routes");
@@ -25,6 +26,7 @@ const orderRoutes     = require("../routes/order.routes");
 const dashboardRoutes = require("../routes/dashboard.routes");
 const settingsRoutes  = require("../routes/settings.routes");
 const reportsRoutes   = require("../routes/reports.routes");
+const inventoryRoutes = require("../routes/inventory.routes");
 
 // ── Create Express app ────────────────────────────────────────────────────────
 const app = express();
@@ -62,6 +64,7 @@ app.use("/api/orders",    orderRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/settings",  settingsRoutes);
 app.use("/api/reports",   reportsRoutes);
+app.use("/api/inventory", inventoryRoutes);
 
 // ── Root health check ─────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
@@ -127,6 +130,7 @@ const gracefulShutdown = (signal) => {
   logger.warn(`${signal} received — shutting down gracefully...`);
   if (server) {
     server.close(async () => {
+      await pdfService.closeBrowser();   // Release the Puppeteer/Chrome process
       const mongoose = require("mongoose");
       await mongoose.connection.close();
       logger.info("MongoDB connection closed.");

@@ -1,26 +1,13 @@
 {
-  "name": "icepro",
+  "name": "icepro-erp",
   "version": "1.0.0",
   "private": true,
-  "dependencies": {
-    "axios": "^1.18.1",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1"
-  },
+  "description": "ICEPRO ERP monorepo — convenience scripts only. Real deps live in frontend/ and backend/.",
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build"
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version"
-    ]
-  },
-  "proxy": "http://localhost:8000"
+    "install:all": "npm install --prefix frontend && npm install --prefix backend",
+    "dev:frontend": "npm start --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev": "npm run dev:backend & npm run dev:frontend",
+    "build": "npm run build --prefix frontend"
+  }
 }

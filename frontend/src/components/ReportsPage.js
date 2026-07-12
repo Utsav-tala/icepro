@@ -3,7 +3,7 @@
 // Filter bar (date preset / agency / product) → KPI cards → dynamic breakdown table(s).
 
 import { useState, useEffect, useMemo } from "react";
-import api from "../api";
+import api, { printReportPdf } from "../api";
 import { C } from "../constants";
 import { SC, Spin, PageHeader, Lbl } from "./UI";
 
@@ -177,10 +177,23 @@ export function ReportsPage({ agencies = [], products = [] }) {
   }
   const secondaryColumns = [idxCol, nameCol("Agency Name", "agencyName"), boxesCol("Total Boxes", "totalBoxes"), revenueCol("totalRevenue"), pctCol("% of Biz"), avgCol];
 
-  // ── Print ───────────────────────────────────────────────────────────────────
-  function handlePrint() {
-    if (!data || !kpis) return;
-    printReport({ kpis, meta, primary, secondary: data.secondaryTable || [], primaryTitle, agencyLabel, productLabel });
+  // ── Print — opens the server-rendered report PDF in a new tab (print or save) ──
+  const [pdfLoading, setPdfLoading] = useState(false);
+  async function handlePrint() {
+    if (!hasData || pdfLoading) return;
+    setPdfLoading(true);
+    try {
+      const params = {};
+      if (startDate)   params.startDate   = startDate;
+      if (endDate)     params.endDate     = endDate;
+      if (agencyId)    params.agencyId    = agencyId;
+      if (productName) params.productName = productName;
+      await printReportPdf(params);
+    } catch (err) {
+      alert(err?.message || "Could not open the report PDF. Please try again.");
+    } finally {
+      setPdfLoading(false);
+    }
   }
 
   return (
@@ -190,8 +203,8 @@ export function ReportsPage({ agencies = [], products = [] }) {
           title="📊 Reports"
           sub="Analytics &amp; Insights"
           action={
-            <button className="btn btn-yellow" onClick={handlePrint} disabled={!hasData}>
-              🖨️ Print Report
+            <button className="btn btn-yellow" onClick={handlePrint} disabled={!hasData || pdfLoading}>
+              {pdfLoading ? "⏳ Generating…" : "🖨️ Print Report"}
             </button>
           }
         />
@@ -302,89 +315,4 @@ export function ReportsPage({ agencies = [], products = [] }) {
       ) : null}
     </div>
   );
-}
-
-// ── Print report in a new window (same pattern as printInvoice in helpers.js) ───
-function printReport({ kpis, meta, primary, secondary, primaryTitle, agencyLabel, productLabel }) {
-  const fmtRs  = (n) => "Rs. " + Math.round(Number(n) || 0).toLocaleString("en-IN");
-  const fmtNum = (n) => (Number(n) || 0).toLocaleString("en-IN");
-  const fmtPct = (n) => (Number(n) || 0).toFixed(1) + "%";
-  const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-
-  const isProd = meta?.scenario === "agencies-for-product";
-  const primaryCols = isProd
-    ? ["#", "Agency Name", "Boxes Bought", "Revenue", "% of Sales", "Avg / Box"]
-    : ["#", "Product Name", "Boxes Sold", "Revenue", "% of Rev", "Avg / Box"];
-  const primaryRows = primary.map((r, i) => [
-    i + 1,
-    esc(isProd ? r.agencyName : r.name),
-    fmtNum(isProd ? r.boxesBought : r.boxesSold),
-    fmtRs(r.revenue),
-    fmtPct(r.percentOfTotal),
-    fmtRs(r.avgPricePerBox),
-  ]);
-
-  const buildTable = (heading, cols, rows) => `
-    <h2>${heading}</h2>
-    <table>
-      <thead><tr>${cols.map((c, i) => `<th class="${i === 0 ? "" : i === 1 ? "l" : "r"}">${c}</th>`).join("")}</tr></thead>
-      <tbody>
-        ${rows.map((row) => `<tr>${row.map((cell, i) => `<td class="${i === 0 ? "" : i === 1 ? "l" : "r"}">${cell}</td>`).join("")}</tr>`).join("")}
-      </tbody>
-    </table>`;
-
-  let secondaryHTML = "";
-  if (meta?.scenario === "products+agencies" && secondary.length > 0) {
-    const secRows = secondary.map((r, i) => [
-      i + 1, esc(r.agencyName), fmtNum(r.totalBoxes), fmtRs(r.totalRevenue), fmtPct(r.percentOfTotal), fmtRs(r.avgPricePerBox),
-    ]);
-    secondaryHTML = buildTable("🏢 Top Agencies", ["#", "Agency Name", "Total Boxes", "Revenue", "% of Biz", "Avg / Box"], secRows);
-  }
-
-  const kpiCards = [
-    ["Total Revenue", fmtRs(kpis.totalRevenue)],
-    ["Total Boxes Sold", fmtNum(kpis.totalBoxesSold)],
-    ["Total Discounts", fmtRs(kpis.totalDiscounts)],
-    ["Total Invoices", fmtNum(kpis.totalInvoices)],
-  ].map(([l, v]) => `<div class="kpi"><div class="kpi-l">${l}</div><div class="kpi-v">${v}</div></div>`).join("");
-
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-  <title>ICEPRO Report — ${esc(meta?.startDate)} to ${esc(meta?.endDate)}</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:'Nunito','Segoe UI',sans-serif;color:#1a0505;padding:24px;font-size:12px;}
-    .head{text-align:center;border-bottom:3px double #c8181e;padding-bottom:10px;margin-bottom:14px;}
-    .head h1{font-size:22px;color:#9e1015;}
-    .head .meta{font-size:11px;color:#6b3333;margin-top:4px;}
-    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;}
-    .kpi{border:1px solid #f0dada;border-top:3px solid #c8181e;border-radius:10px;padding:12px 14px;}
-    .kpi-l{font-size:10px;text-transform:uppercase;color:#a07070;font-weight:700;letter-spacing:.5px;}
-    .kpi-v{font-size:18px;font-weight:800;color:#1a0505;margin-top:6px;}
-    h2{font-size:14px;color:#9e1015;margin:18px 0 8px;}
-    table{width:100%;border-collapse:collapse;margin-bottom:8px;}
-    th{background:#222;color:#fff;font-size:10px;text-transform:uppercase;padding:6px 8px;text-align:center;border:1px solid #444;}
-    td{border:1px solid #ddd;padding:5px 8px;text-align:center;}
-    th.l,td.l{text-align:left;} th.r,td.r{text-align:right;}
-    tbody tr:nth-child(even){background:#fffafa;}
-    .no-print{margin-bottom:16px;display:flex;gap:10px;}
-    .no-print button{border:none;border-radius:8px;padding:9px 20px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;}
-    .btn-p{background:#c8181e;color:#fff;} .btn-c{background:#eee;color:#333;}
-    @media print{.no-print{display:none!important;}body{padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;}}
-  </style></head><body>
-    <div class="no-print">
-      <button class="btn-p" onclick="window.print()">🖨️ Print / Save as PDF</button>
-      <button class="btn-c" onclick="window.close()">✕ Close</button>
-    </div>
-    <div class="head">
-      <h1>VRUNDAVAN ICE CREAM — Sales Report</h1>
-      <div class="meta">${esc(meta?.startDate)} &nbsp;to&nbsp; ${esc(meta?.endDate)} &nbsp;|&nbsp; ${esc(agencyLabel)} &nbsp;|&nbsp; ${esc(productLabel)}</div>
-    </div>
-    <div class="kpis">${kpiCards}</div>
-    ${buildTable(primaryTitle, primaryCols, primaryRows)}
-    ${secondaryHTML}
-  </body></html>`;
-
-  const w = window.open("", "_blank", "width=920,height=820,scrollbars=yes");
-  if (w) { w.document.write(html); w.document.close(); }
-  else alert("Allow pop-ups for this site to print the report.");
 }

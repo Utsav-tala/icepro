@@ -10,23 +10,28 @@
 // 4. advanceUsed: if the agency has a negative balance (advance credit), it is
 //    absorbed into this bill (advanceUsed = |prevBalance|), resetting balance to 0.
 
-const mongoose    = require("mongoose");
-const Bill        = require("../models/Bill");
-const Payment     = require("../models/Payment");
-const Agency      = require("../models/Agency");
-const Transaction = require("../models/Transaction");
-const Counter     = require("../models/Counter");
-const ApiError    = require("../utils/ApiError");
+const mongoose         = require("mongoose");
+const Bill             = require("../models/Bill");
+const Payment          = require("../models/Payment");
+const Agency           = require("../models/Agency");
+const Transaction      = require("../models/Transaction");
+const Counter          = require("../models/Counter");
+const ApiError         = require("../utils/ApiError");
+const inventoryService = require("./inventory.service");
+const { BILL_STATUS, balanceBearingBills } = require("../constants");
 
 // ── Helper: compute current outstanding balance for an agency ─────────────────
 // balance > 0 → agency owes money (outstanding)
 // balance < 0 → agency has advance credit
+//
+// Pending bills are EXCLUDED — an order books no money until it is delivered. That is
+// the rule that makes editing a pending bill safe: with nothing financial booked against
+// it, changing its items cannot corrupt any balance or any later bill's prevBalance
+// snapshot. See balanceBearingBills() in constants/index.js.
 const computeAgencyBalance = async (agencyId, session = null) => {
-  const opts = session ? { session } : {};
-
   const [billAgg, payAgg] = await Promise.all([
     Bill.aggregate([
-      { $match: { agencyId: new mongoose.Types.ObjectId(agencyId) } },
+      { $match: { agencyId: new mongoose.Types.ObjectId(agencyId), status: balanceBearingBills() } },
       { $group: { _id: null, total: { $sum: "$total" } } },
     ]).session(session),
     Payment.aggregate([
@@ -55,40 +60,73 @@ const createBill = async (data, createdByUser) => {
     const rate   = Number(item.rate);
     const disc   = Number(item.disc || 0);
     const amount = parseFloat((qty * rate * (1 - disc / 100)).toFixed(2));
-    return { name: item.name.trim(), qty, rate, disc, amount };
+    // productId is the hard catalog link the inventory engine needs. It is optional —
+    // a line without one simply moves no stock (see inventory.service.js:buildQtyMap).
+    return { productId: item.productId || undefined, name: item.name.trim(), qty, rate, disc, amount };
   });
 
-  const subtotal    = parseFloat(items.reduce((s, i) => s + i.amount, 0).toFixed(2));
-  const discountAmt = parseFloat(Number(data.discountAmt || 0).toFixed(2));
-  const total       = parseFloat((subtotal - discountAmt).toFixed(2));
+  // Money model (kept consistent with invoice.template.js and legacy data):
+  //   item.amount = qty*rate*(1 - disc/100)   ← NET, per-item discount already applied
+  //   subtotal    = Σ (qty*rate)              ← GROSS (list value, pre-discount)
+  //   discountAmt = subtotal - Σ item.amount  ← total per-item discount (derived, not
+  //                                             taken from the client, which would
+  //                                             double-count since it's already in amount)
+  //   total       = subtotal - discountAmt = Σ item.amount   ← NET billed amount
+  const grossSubtotal = parseFloat(items.reduce((s, i) => s + i.qty * i.rate, 0).toFixed(2));
+  const netTotal      = parseFloat(items.reduce((s, i) => s + i.amount, 0).toFixed(2));
+  const subtotal      = grossSubtotal;
+  const discountAmt   = parseFloat((grossSubtotal - netTotal).toFixed(2));
+  const total         = netTotal;
 
-  if (total < 0) throw new ApiError(400, "Discount amount cannot exceed subtotal");
+  if (total < 0) throw new ApiError(400, "Bill total cannot be negative");
 
-  // 3. Generate atomic invoice number BEFORE starting session
-  //    (Counter uses its own atomic findOneAndUpdate — safe outside session)
-  const billNo = await Counter.getNextInvoiceNumber(data.billType);
+  // 3. Determine the lifecycle status.
+  //    Defaults to `delivered`, which is today's behaviour exactly: the bill IS an
+  //    invoice the moment it is written. The `pending` path below is fully wired and
+  //    tested by the stock engine, but nothing sends `status: "pending"` until the
+  //    pending/delivered UI is built.
+  const status      = data.status || BILL_STATUS.DELIVERED;
+  const isDelivered = status === BILL_STATUS.DELIVERED;
 
-  // 4. Open a Mongoose session for atomic Bill + Transaction write
+  // 4. Burn an invoice number ONLY for a delivered bill.
+  //    A pending bill is an order and carries no number — so cancelling one no longer
+  //    leaves a permanent gap in the GST series, which auditors object to.
+  //    (Counter uses its own atomic findOneAndUpdate — safe outside the session.)
+  const billNo = isDelivered
+    ? await Counter.getNextInvoiceNumber(data.billType)
+    : undefined;
+
+  // 5. One session covering the Bill, its Transaction, the stock counters and the
+  //    stock ledger — they all commit together or none of them do.
   const session = await mongoose.startSession();
 
   try {
     let bill;
 
     await session.withTransaction(async () => {
-      // 4a. Compute prevBalance INSIDE the transaction for consistency
-      const prevBalance = await computeAgencyBalance(data.agencyId, session);
+      // 5a. Financials. A pending bill books NO money: no balance is carried forward
+      // and no Transaction row is written. That is precisely what makes it safe to edit
+      // later — there is nothing financial to corrupt.
+      //
+      // advanceUsed: how much advance credit this bill absorbs (display only).
+      // grandTotal uses the SIGNED prevBalance directly — for advance credit
+      // prevBalance is already negative, so `total + prevBalance` reduces the bill.
+      // (Subtracting advanceUsed on top of a negative prevBalance would double-count.)
+      // If prevBalance = -500 → advance ₹500 → grandTotal = total - 500.
+      // If prevBalance = +500 → owes ₹500   → grandTotal = total + 500.
+      const prevBalance = isDelivered
+        ? await computeAgencyBalance(data.agencyId, session)
+        : 0;
+      const advanceUsed = prevBalance < 0 ? Math.abs(prevBalance) : 0;
+      const grandTotal  = parseFloat(Math.max(0, total + prevBalance).toFixed(2));
 
-      // 4b. advanceUsed: absorb negative balance (advance credit) into this bill
-      // If prevBalance = -500 → agency has Rs.500 advance
-      // advanceUsed = 500, grandTotal = total + 0 - 500 = total - 500
-      const advanceUsed  = prevBalance < 0 ? Math.abs(prevBalance) : 0;
-      const grandTotal   = parseFloat(Math.max(0, total + prevBalance - advanceUsed).toFixed(2));
-
-      // 4c. Create the bill document
+      // 5b. Create the bill document
       [bill] = await Bill.create(
         [{
           billNo,
           billType:     data.billType,
+          status,
+          deliveredAt:  isDelivered ? new Date() : undefined,
           agencyId:     agency._id,
           agencyName:   agency.name,
           items,
@@ -107,22 +145,31 @@ const createBill = async (data, createdByUser) => {
         { session }
       );
 
-      // 4d. Write the Transaction record (replaces Firestore sub-collection write)
-      await Transaction.create(
-        [{
-          agencyId:     agency._id,
-          type:         "bill",
-          billId:       bill._id,
-          billNo:       bill.billNo,
-          billType:     bill.billType,
-          amount:       bill.total,
-          prevBalance,
-          advanceUsed,
-          notes:        bill.notes,
-          createdByName: bill.createdByName,
-        }],
-        { session }
-      );
+      // 5c. Write the Transaction record — delivered bills only (see 5a).
+      if (isDelivered) {
+        await Transaction.create(
+          [{
+            agencyId:     agency._id,
+            type:         "bill",
+            billId:       bill._id,
+            billNo:       bill.billNo,
+            billType:     bill.billType,
+            amount:       bill.total,
+            prevBalance,
+            advanceUsed,
+            notes:        bill.notes,
+            createdByName: bill.createdByName,
+          }],
+          { session }
+        );
+      }
+
+      // 5d. Apply the stock consequences. null → bill, because the bill did not exist
+      // before. The engine reads `status` off the bill and moves the right counters:
+      // a delivered bill takes boxes OUT of the freezer, a pending one merely reserves
+      // them. Stock is deliberately allowed to go negative — a negative `available` is
+      // the production signal, surfaced by GET /api/inventory/shortfalls, not an error.
+      await inventoryService.applyBillStock(null, bill, createdByUser, session);
     });
 
     return bill;

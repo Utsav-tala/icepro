@@ -1,57 +1,39 @@
-// src/helpers.js
-export function friendlyError(code) {
-  const map = {
-    "auth/email-already-in-use": "This email is already registered.",
-    "auth/invalid-email": "Invalid email address.",
-    "auth/weak-password": "Password must be at least 6 characters.",
-    "auth/user-not-found": "No account found with this email.",
-    "auth/wrong-password": "Incorrect password.",
-    "auth/invalid-credential": "Incorrect email or password.",
-    "auth/too-many-requests": "Too many attempts. Please wait a few minutes.",
-    "auth/network-request-failed": "Network error. Check your internet.",
-  };
-  return map[code] || "Something went wrong. Please try again.";
-}
+// backend/templates/invoice.template.js
+// Server-side port of the client `printInvoice()` in frontend/src/helpers.js.
+// Produces a complete, print-ready HTML string for a single bill — Puppeteer
+// renders this to a pixel-perfect A4 PDF (emulateMediaType('print')).
+//
+// Differences from the client version (intentional):
+//   • Logo is embedded as a base64 data URI (no network access inside Puppeteer).
+//   • All user-supplied strings are HTML-escaped (agency/item names, notes).
+//   • Dates come from a real JS Date (bill.createdAt), not a Firestore Timestamp.
+//   • No "no-print" toolbar / window.open — this is headless rendering only.
+//
+// billType: "gst"    → TAX INVOICE  (HSN/SAC + GST% columns, GSTIN, VMP series)
+// billType: "nongst" → INVOICE      (no GST columns, no GSTIN, GB series)
+//
+// Pagination capacity (kept identical to the verified client values):
+//   ROWS_P1   = 20  (first page — has the bill-to/invoice grid overhead)
+//   ROWS_CONT = 24  (continuation pages — lighter header)
 
-// ── Financial year helper ─────────────────────────────────────────────────────
-// In India, FY runs April 1 → March 31.
-// April 2025 → March 2026 = "25-26"
-export function getCurrentFY() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1; // 1-based
-  const startYear = month >= 4 ? year : year - 1;
-  const endYear = startYear + 1;
-  return `${String(startYear).slice(-2)}-${String(endYear).slice(-2)}`;
-}
+const { logoDataUri, fontsCss } = require("./assets");
 
-// ── Balance helpers ───────────────────────────────────────────────────────────
-export function computeBalance(agencyId, bills, payments) {
-  const id = String(agencyId);
-  const billed = bills
-    .filter(b => String(b.agencyId) === id)
-    .reduce((s, b) => s + (b.total || 0), 0);
-  const paid = payments
-    .filter(p => String(p.agencyId) === id)
-    .reduce((s, p) => s + (p.total || 0), 0);
-  return billed - paid;
-}
+// ── HTML escape — user strings must never break the markup or inject nodes ────
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
 
-export function balanceDisplay(bal) {
-  if (bal > 0) return { label: "Outstanding", color: "#c8181e", display: `-Rs.${bal.toLocaleString()}` };
-  if (bal < 0) return { label: "Advance Credit", color: "#065f46", display: `+Rs.${Math.abs(bal).toLocaleString()}` };
-  return { label: "Settled", color: "#065f46", display: "Rs.0" };
-}
-
-export function toWords(n) {
+// ── Amount in words (Indian system) — ported from helpers.js:toWords ──────────
+function toWords(n) {
   const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"];
   const tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
   if (!n || n === 0) return "Zero Only";
-  function chunk(num) {
+  const chunk = (num) => {
     if (num === 0) return "";
     if (num < 20) return ones[num] + " ";
     return tens[Math.floor(num / 10)] + (num % 10 ? " " + ones[num % 10] + " " : " ");
-  }
+  };
   const amt = Math.round(n * 100) / 100;
   const intPart = Math.floor(amt);
   const decPart = Math.round((amt - intPart) * 100);
@@ -65,42 +47,52 @@ export function toWords(n) {
   return w.trim() + " Only";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PRINT INVOICE
-//
-// billType: "gst"    → TAX INVOICE  (shows GST column, GSTIN, VMP series)
-// billType: "nongst" → INVOICE      (hides GST column, no GSTIN, GB series)
-//
-// Page capacity (verified against Chrome print with URL bar + page numbers):
-//   A4 at 96dpi = 1123px. Usable ≈ ~920px (conservative, safe with any margins).
-//   Page 1 fixed overhead: co-header ~85px + inv-bar ~22px + bill-grid ~80px
-//     + table-head ~19px = 206px
-//   Footer fixed overhead: ~254px
-//   Available for item rows on page 1: 920 - 206 - 254 = 460px → 460/20 = 23 rows
-//   ROWS_P1 = 20  (3 row safety buffer)
-//   Continuation page: 920 - 126 - 254 = 540px → 540/20 = 27 rows
-//   ROWS_CONT = 24 (3 row safety buffer)
-// ─────────────────────────────────────────────────────────────────────────────
-export function printInvoice(bill, agency, settings) {
-  // billType saved on the bill doc; fall back to "nongst" for old bills
+const ROWS_P1   = 20;
+const ROWS_CONT = 24;
+
+/**
+ * Build the full invoice HTML document for a bill.
+ * @param {object} bill     Bill document (plain object) — items, totals, billNo, createdAt…
+ * @param {object} agency   Populated agency (name, city, phone, gst) — may be null
+ * @param {object} settings Settings document — business + bank sections
+ * @returns {string} complete <html> document
+ */
+function buildInvoiceHTML(bill, agency = {}, settings = {}) {
   const billType = bill.billType || "nongst";
-  const isGST = billType === "gst";
+  const isGST    = billType === "gst";
 
-  const items = bill.items || [];
-  const subtotal = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
-  const discAmt = Number(bill.discountAmt) || 0;
-  const discPct = subtotal > 0 ? ((discAmt / subtotal) * 100).toFixed(2) : "0.00";
-  const billAmt = subtotal - discAmt;
-  const prevBal = Number(bill.prevBalance) || 0;
-  const advUsed = Number(bill.advanceUsed) || 0;
-  const grandTotal = Math.max(0, billAmt + prevBal - advUsed);
-  const totalQty = items.reduce((s, it) => s + Number(it.qty || 0), 0);
-  const dateStr = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" })
-    || new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  // Derive gross / net / discount PER ITEM from the ground-truth line data
+  // (qty, rate, amount). The stored `disc` field is unreliable — legacy bills have
+  // disc=0 while the discount is baked into `amount` — so we recompute the real
+  // discount % from gross vs net. This keeps the DISC% column and every total
+  // correct for legacy, current, and future bills alike.
+  const rawItems = bill.items || [];
+  const items = rawItems.map((it) => {
+    const qty   = Number(it.qty || 0);
+    const rate  = Number(it.rate || 0);
+    const gross = qty * rate;                                   // list value (pre-discount)
+    const net   = Number(it.amount != null ? it.amount : gross); // what's actually charged
+    const discAmt = Math.max(0, gross - net);
+    const discPct = gross > 0 ? (discAmt / gross) * 100 : 0;
+    return { ...it, qty, rate, gross, net, discPct };
+  });
 
-  const ROWS_P1 = 20;
-  const ROWS_CONT = 24;
+  const subtotal    = items.reduce((s, it) => s + it.gross, 0);   // GROSS subtotal (Σ qty*rate)
+  const netSubtotal = items.reduce((s, it) => s + it.net, 0);     // net = current bill amount
+  const discAmt     = subtotal - netSubtotal;                     // total per-item discount
+  const discPct     = subtotal > 0 ? ((discAmt / subtotal) * 100).toFixed(2) : "0.00";
+  const billAmt     = netSubtotal;
+  const prevBal     = Number(bill.prevBalance) || 0;   // signed: >0 owes, <0 advance
+  const advUsed     = Number(bill.advanceUsed) || 0;   // display only
+  // Use the SIGNED prevBalance directly — advance credit is already negative here,
+  // so adding it reduces the bill. Subtracting advUsed too would double-count.
+  const grandTotal  = Math.max(0, billAmt + prevBal);
+  const totalQty    = items.reduce((s, it) => s + it.qty, 0);
+  const dateStr    = new Date(bill.createdAt || Date.now()).toLocaleDateString("en-IN", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+  });
 
+  // ── Split items across pages ──────────────────────────────────────────────
   const pages = [];
   if (items.length <= ROWS_P1) {
     pages.push(items);
@@ -115,22 +107,26 @@ export function printInvoice(bill, agency, settings) {
   const totalPages = pages.length;
 
   // ── Company header ────────────────────────────────────────────────────────
-  const b = settings?.business || {};
-  const cName = b.companyName || "VRUNDAVAN MILK PRODUCTS";
-  const cAddr = b.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
-  const cPhone = b.phone || "95125 50255";
-  const cGst = b.gstin || "24AARFV6273D1ZV";
+  const b      = settings?.business || {};
+  const cName  = esc(b.companyName || "VRUNDAVAN MILK PRODUCTS");
+  const cAddr  = esc(b.address || "DHORAJI ROAD, KALAVAD (SHITALA)");
+  const cPhone = esc(b.phone || "95125 50255");
+  const cGst   = esc(b.gstin || "24AARFV6273D1ZV");
+
+  const logoImg = logoDataUri
+    ? `<img src="${logoDataUri}" class="co-logo"/>`
+    : "";
 
   const coHeader = `
     <div class="co-header">
-      <img src="${window.location.origin}/logo.png" class="co-logo" onerror="this.style.display='none'"/>
+      ${logoImg}
       <div class="co-text">
         <div class="co-name">${cName}</div>
         <div class="co-addr">${cAddr} &nbsp;|&nbsp; Mo: ${cPhone}</div>
       </div>
     </div>`;
 
-  // ── Table column header — GST bill shows HSN/SAC & GST% columns; Non-GST hides them ──
+  // ── Table column header ───────────────────────────────────────────────────
   const thead = isGST ? `
     <thead>
       <tr>
@@ -155,44 +151,43 @@ export function printInvoice(bill, agency, settings) {
       </tr>
     </thead>`;
 
-  // ── Item rows — column count differs by bill type ─────────────────────────
-  function buildRows(pageItems, srStart) {
-    return pageItems.map((it, i) => isGST ? `
+  // AMOUNT column shows the GROSS line value (qty*rate); the DISC% column shows the
+  // real per-item discount; the bill-level Discount line below subtracts to the net.
+  const buildRows = (pageItems, srStart) =>
+    pageItems.map((it, i) => isGST ? `
       <tr style="background:${(srStart + i) % 2 === 0 ? "#ffffff" : "#fffafa"};">
         <td class="td tdc">${srStart + i + 1}</td>
-        <td class="td tdl" style="font-weight:600;">${it.name}</td>
-        <td class="td tdc">${it.hsn || ""}</td>
-        <td class="td tdc">${Number(it.qty || 0).toFixed(3)}</td>
-        <td class="td tdr">${Number(it.rate || 0).toFixed(2)}</td>
-        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.disc != null ? Number(it.disc).toFixed(1) + "%" : ""}</td>
+        <td class="td tdl" style="font-weight:600;">${esc(it.name)}</td>
+        <td class="td tdc">${esc(it.hsn || "")}</td>
+        <td class="td tdc">${it.qty.toFixed(3)}</td>
+        <td class="td tdr">${it.rate.toFixed(2)}</td>
+        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.discPct > 0 ? it.discPct.toFixed(1) + "%" : "—"}</td>
         <td class="td tdc"></td>
-        <td class="td tdr" style="font-weight:700;">${Number(it.amount || 0).toFixed(2)}</td>
+        <td class="td tdr" style="font-weight:700;">${it.gross.toFixed(2)}</td>
       </tr>` : `
       <tr style="background:${(srStart + i) % 2 === 0 ? "#ffffff" : "#fffafa"};">
         <td class="td tdc">${srStart + i + 1}</td>
-        <td class="td tdl" style="font-weight:600;">${it.name}</td>
-        <td class="td tdc">${Number(it.qty || 0).toFixed(3)}</td>
-        <td class="td tdr">${Number(it.rate || 0).toFixed(2)}</td>
-        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.disc != null ? Number(it.disc).toFixed(1) + "%" : ""}</td>
-        <td class="td tdr" style="font-weight:700;">${Number(it.amount || 0).toFixed(2)}</td>
+        <td class="td tdl" style="font-weight:600;">${esc(it.name)}</td>
+        <td class="td tdc">${it.qty.toFixed(3)}</td>
+        <td class="td tdr">${it.rate.toFixed(2)}</td>
+        <td class="td tdc" style="color:#065f46;font-weight:700;">${it.discPct > 0 ? it.discPct.toFixed(1) + "%" : "—"}</td>
+        <td class="td tdr" style="font-weight:700;">${it.gross.toFixed(2)}</td>
       </tr>`
     ).join("");
-  }
 
-  // ── Blank rows — pads last page so footer stays at bottom ────────────────
-  function buildBlankRows(count) {
+  const buildBlankRows = (count) => {
     if (count <= 0) return "";
     const blankRow = isGST
       ? `<tr style="height:20px;"><td class="td tdc"></td><td class="td tdl"></td><td class="td tdc"></td><td class="td tdc"></td><td class="td tdr"></td><td class="td tdc"></td><td class="td tdc"></td><td class="td tdr"></td></tr>`
       : `<tr style="height:20px;"><td class="td tdc"></td><td class="td tdl"></td><td class="td tdc"></td><td class="td tdr"></td><td class="td tdc"></td><td class="td tdr"></td></tr>`;
     return Array.from({ length: count }, () => blankRow).join("");
-  }
+  };
 
   // ── Footer ────────────────────────────────────────────────────────────────
-  const bk = settings?.bank || {};
-  const bName = bk.bankName || "AXIS BANK LTD";
-  const bAcc = bk.accountNo || "919020042817580";
-  const bIfsc = bk.ifsc || "UTIB0001316";
+  const bk    = settings?.bank || {};
+  const bName = esc(bk.bankName || "AXIS BANK LTD");
+  const bAcc  = esc(bk.accountNo || "919020042817580");
+  const bIfsc = esc(bk.ifsc || "UTIB0001316");
 
   const footerHTML = `
     <div class="foot-bank-row">
@@ -221,12 +216,12 @@ export function printInvoice(bill, agency, settings) {
     </div>
 
     <div class="foot-words-row">
-      <b>Bill Amount :</b>&nbsp;&nbsp;<i>${toWords(grandTotal)}</i>
+      <b>Bill Amount :</b>&nbsp;&nbsp;<i>${esc(toWords(grandTotal))}</i>
     </div>
 
     <div class="foot-note-grand-row">
       <div class="note-sec">
-        <b>Note :</b>&nbsp;${bill.notes || ""}
+        <b>Note :</b>&nbsp;${esc(bill.notes || "")}
       </div>
       <div class="grand-sec">
         <div class="grand-label">Grand Total</div>
@@ -251,10 +246,8 @@ export function printInvoice(bill, agency, settings) {
       </div>
     </div>`;
 
-  // ── Invoice bar labels — differ by bill type ──────────────────────────────
-  // GST Bill:     "Debit Memo  |  TAX INVOICE  |  Original"
-  // Non-GST Bill: "Debit Memo  |  INVOICE      |  Original"
   const invBarCenter = isGST ? "TAX INVOICE" : "INVOICE";
+  const agencyName   = esc(agency?.name || bill.agencyName || "—");
 
   // ── Assemble all pages ────────────────────────────────────────────────────
   let allPagesHTML = "";
@@ -262,16 +255,15 @@ export function printInvoice(bill, agency, settings) {
 
   pages.forEach((pageItems, pi) => {
     const isFirst = pi === 0;
-    const isLast = pi === totalPages - 1;
+    const isLast  = pi === totalPages - 1;
     const capacity = isFirst ? ROWS_P1 : ROWS_CONT;
     const blankCount = isLast ? Math.max(0, capacity - pageItems.length) : 0;
     const cumQty = items.slice(0, srStart + pageItems.length)
       .reduce((s, it) => s + Number(it.qty || 0), 0);
 
-    // tfoot colspan differs — GST has 8 cols, Non-GST has 6 cols
     const colSpanTotal = isGST ? 8 : 6;
-    const colSpanLeft = isGST ? 3 : 2;
-    const colSpanMid = isGST ? 3 : 2;
+    const colSpanLeft  = isGST ? 3 : 2;
+    const colSpanMid   = isGST ? 3 : 2;
 
     const tfoot = isLast
       ? `<tfoot>
@@ -307,16 +299,16 @@ export function printInvoice(bill, agency, settings) {
       <div class="bill-grid">
         <div class="bill-to">
           <div class="fld-lbl">M/S.</div>
-          <div style="font-size:15px;font-weight:800;margin:2px 0 4px;">${agency?.name || bill.agencyName || "—"}</div>
-          <div style="font-size:11px;color:#444;margin-top:1px;">${agency?.phone || ""}</div>
-          <div style="font-size:11px;font-weight:700;margin-top:1px;">${agency?.city || ""}</div>
+          <div style="font-size:15px;font-weight:800;margin:2px 0 4px;">${agencyName}</div>
+          <div style="font-size:11px;color:#444;margin-top:1px;">${esc(agency?.phone || "")}</div>
+          <div style="font-size:11px;font-weight:700;margin-top:1px;">${esc(agency?.city || "")}</div>
           <div style="font-size:10px;color:#555;margin-top:2px;">Place of Supply : 24-Gujarat</div>
-          ${isGST && agency?.gst ? `<div style="font-size:10px;color:#555;margin-top:2px;">GSTIN: ${agency.gst}</div>` : ""}
+          ${isGST && agency?.gst ? `<div style="font-size:10px;color:#555;margin-top:2px;">GSTIN: ${esc(agency.gst)}</div>` : ""}
         </div>
         <div class="bill-inv">
           <div style="margin-bottom:8px;">
             <div class="fld-lbl">INVOICE NO.</div>
-            <div style="font-size:14px;font-weight:800;">: &nbsp;${bill.billNo}</div>
+            <div style="font-size:14px;font-weight:800;">: &nbsp;${esc(bill.billNo)}</div>
           </div>
           <div style="margin-bottom:8px;">
             <div class="fld-lbl">DATE</div>
@@ -326,16 +318,16 @@ export function printInvoice(bill, agency, settings) {
           ${bill.createdByName ? `
           <div>
             <div class="fld-lbl">PREPARED BY</div>
-            <div style="font-size:12px;font-weight:600;">: &nbsp;${bill.createdByName}</div>
+            <div style="font-size:12px;font-weight:600;">: &nbsp;${esc(bill.createdByName)}</div>
           </div>` : ""}
         </div>
       </div>
       ` : `
       <div class="cont-bar">
         <span>
-          <b>Invoice:</b> ${bill.billNo} &nbsp;|&nbsp;
+          <b>Invoice:</b> ${esc(bill.billNo)} &nbsp;|&nbsp;
           <b>Date:</b> ${dateStr} &nbsp;|&nbsp;
-          <b>M/s.</b> ${agency?.name || bill.agencyName}
+          <b>M/s.</b> ${agencyName}
         </span>
         <span style="font-weight:700;">Page ${pi + 1} of ${totalPages}</span>
       </div>
@@ -357,20 +349,22 @@ export function printInvoice(bill, agency, settings) {
   });
 
   // ── Full HTML document ────────────────────────────────────────────────────
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
-  <title>Invoice ${bill.billNo} — ${agency?.name || bill.agencyName}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+  // Fonts (Playfair Display + Nunito) are inlined via fontsCss — Puppeteer has no
+  // network, so they must be embedded to match the app's on-screen branding.
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+  <title>Invoice ${esc(bill.billNo)} — ${agencyName}</title>
   <style>
+    ${fontsCss}
+    @page { size: A4; margin: 6mm; }
     *{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:'Nunito',sans-serif;color:#111;background:#fff;font-size:11px;}
+    body{font-family:'Nunito',Arial,sans-serif;color:#111;background:#fff;font-size:11px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 
-    .page{max-width:820px;margin:0 auto;padding:10px 14px;border:2px solid #444;}
-    .pg-break{page-break-after:always;border-bottom:none;}
-    .no-print{margin-bottom:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+    .page{padding:6px;}
+    .pg-break{page-break-after:always;}
 
     .co-header{display:flex;align-items:center;justify-content:center;gap:12px;padding:5px 0 6px;border-bottom:3px double #333;}
     .co-logo{height:54px;width:auto;}
-    .co-name{font-family:'Playfair Display',serif;font-size:24px;font-weight:800;text-align:center;}
+    .co-name{font-family:'Playfair Display',serif;font-size:24px;font-weight:800;text-align:center;letter-spacing:.5px;}
     .co-addr{font-size:10px;color:#444;text-align:center;margin-top:2px;}
 
     .inv-bar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;background:#111;color:#fff;padding:4px 12px;margin:5px 0 0;}
@@ -420,116 +414,9 @@ export function printInvoice(bill, agency, settings) {
     .sign-sec{padding:6px 10px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;min-height:58px;}
     .for-label{font-size:10px;font-weight:700;color:#333;}
     .auth-label{font-size:10px;color:#333;}
-
-    @media print {
-      .no-print{display:none!important;}
-      body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-      .page{border:none;padding:6px;max-width:100%;}
-      .pg-break{page-break-after:always;}
-    }
   </style></head><body>
-
-  <div class="no-print">
-    <button onclick="window.print()"
-      style="background:#c8181e;color:#fff;border:none;padding:9px 24px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Nunito',sans-serif;">
-      🖨️ Print / Save as PDF
-    </button>
-    <button onclick="window.close()"
-      style="background:#eee;color:#333;border:none;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer;font-family:'Nunito',sans-serif;">
-      ✕ Close
-    </button>
-    ${isGST
-      ? `<span style="background:#ecfdf5;border:1px solid #a7f3d0;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#065f46;">✓ GST Invoice — ${bill.billNo}</span>`
-      : `<span style="background:#eff6ff;border:1px solid #bfdbfe;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#1e40af;">📄 Non-GST Invoice — ${bill.billNo}</span>`
-    }
-    ${totalPages > 1
-      ? `<span style="background:#fff3cd;border:1px solid #ffc107;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:700;color:#856404;">📄 ${totalPages} pages</span>`
-      : ""}
-    <span style="background:#f0f9ff;border:1px solid #bae6fd;padding:6px 12px;border-radius:8px;font-size:10px;color:#0369a1;">
-      💡 In print dialog: set Margins to <b>Minimum</b> &amp; uncheck <b>Headers and footers</b>
-    </span>
-  </div>
-
   ${allPagesHTML}
-
   </body></html>`;
-
-  const w = window.open("", "_blank", "width=920,height=820,scrollbars=yes");
-  if (w) { w.document.write(html); w.document.close(); }
-  else alert("Allow pop-ups for this site to open invoices.");
 }
 
-// ── WhatsApp bill share ───────────────────────────────────────────────────────
-export function shareWhatsApp(bill, agency, settings) {
-  const billType = bill.billType || "nongst";
-  const isGST = billType === "gst";
-
-  const items = bill.items || [];
-  const sub = Number(bill.subtotal) || items.reduce((s, it) => s + (it.amount || 0), 0);
-  const disc = Number(bill.discountAmt) || 0;
-  const billAmt = sub - disc;
-  const prevBal = Number(bill.prevBalance) || 0;
-  const advUsed = Number(bill.advanceUsed) || 0;
-  const grandTotal = Math.max(0, billAmt + prevBal - advUsed);
-  const date = bill.createdAt?.toDate?.()?.toLocaleDateString("en-IN") || new Date().toLocaleDateString("en-IN");
-  const lines = items.map((it, i) => {
-    const gross = Number(it.qty) * Number(it.rate);
-    const netAmt = Number(it.amount || gross);
-    const discPct = it.disc != null ? Number(it.disc) : null;
-    const discAmt = discPct && discPct > 0 ? gross - netAmt : 0;
-    const discLine = discPct != null && discPct > 0
-      ? `\n     🏷️ ${discPct.toFixed(1)}% disc  |  Discount Amt: Rs.${discAmt.toFixed(0)}  |  ${gross.toFixed(0)} - ${discAmt.toFixed(0)} = *Rs.${netAmt.toFixed(2)}*`
-      : `  =  *Rs.${netAmt.toFixed(2)}*`;
-    const grossLine = discPct != null && discPct > 0
-      ? `Rs.${gross.toFixed(0)}`
-      : `*Rs.${netAmt.toFixed(2)}*`;
-    return `  ${i + 1}. ${it.name}\n     Qty: ${it.qty}  ×  Rs.${it.rate}  =  ${grossLine}${discLine}`;
-  }).join("\n");
-
-  let totals = `Sub Total         : Rs. ${sub.toFixed(2)}\n`;
-  if (disc > 0) totals += `Discount          : Rs. ${disc.toFixed(2)}\n`;
-  totals += `Current Bill      : Rs. ${billAmt.toFixed(2)}\n`;
-  if (prevBal > 0) totals += `Previous Balance  : Rs. ${prevBal.toFixed(2)}\n`;
-  if (advUsed > 0) totals += `Advance Deducted  : Rs. ${advUsed.toFixed(2)}\n`;
-
-  const bz = settings?.business || {};
-  const cName = bz.companyName || "VRUNDAVAN MILK PRODUCTS";
-  const cAddr = bz.address || "DHORAJI ROAD, KALAVAD (SHITALA)";
-  const cPhone = bz.phone || "95125 50255";
-
-  const bk = settings?.bank || {};
-  const bName = bk.bankName || "AXIS BANK";
-  const bAcc = bk.accountNo || "919020042817580";
-  const bIfsc = bk.ifsc || "UTIB0001316";
-
-  // Header line differs by bill type
-  const invoiceHeader = isGST ? "TAX INVOICE / DEBIT MEMO" : "INVOICE / DEBIT MEMO";
-
-  const msg = `*${cName}*
-${cAddr}
-Mo: ${cPhone}
-━━━━━━━━━━━━━━━━━━━━
-*${invoiceHeader}*
-━━━━━━━━━━━━━━━━━━━━
-Invoice No : ${bill.billNo}
-Date       : *${date}*
-M/s        : *${agency?.name || bill.agencyName}*
-City       : ${agency?.city || ""}
-
-*ITEMS:*
-${lines}
-━━━━━━━━━━━━━━━━━━━━
-${totals}━━━━━━━━━━━━━━━━━━━━
-*TOTAL DUE : Rs. ${grandTotal.toFixed(2)}*
-━━━━━━━━━━━━━━━━━━━━
-_${toWords(grandTotal)}_
-
-Thank you for your business!
-${bName} | A/c: ${bAcc} | IFSC: ${bIfsc}`;
-
-  const phone = agency?.phone?.replace(/\D/g, "");
-  const url = phone
-    ? `https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`
-    : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-  window.open(url, "_blank");
-}
+module.exports = { buildInvoiceHTML };

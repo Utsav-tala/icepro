@@ -6,6 +6,7 @@ const Payment = require("../models/Payment");
 const Agency = require("../models/Agency");
 const Transaction = require("../models/Transaction");
 const { getCurrentFY } = require("../utils/helpers");
+const { balanceBearingBills } = require("../constants");
 
 // ── Get Dashboard Metrics ─────────────────────────────────────────────────────
 const getDashboardMetrics = async () => {
@@ -19,8 +20,9 @@ const getDashboardMetrics = async () => {
   const activeAgencies = await Agency.countDocuments({ status: "active" });
 
   // 2. Today's Sales (total of bills created today)
+  // Pending orders are excluded — they are not sales until they are delivered.
   const todaySalesAgg = await Bill.aggregate([
-    { $match: { createdAt: { $gte: startOfToday, $lte: endOfToday } } },
+    { $match: { createdAt: { $gte: startOfToday, $lte: endOfToday }, status: balanceBearingBills() } },
     { $group: { _id: null, total: { $sum: "$total" } } },
   ]);
   const todaySales = todaySalesAgg[0]?.total || 0;
@@ -34,7 +36,10 @@ const getDashboardMetrics = async () => {
 
   // 4. Total Outstanding (Total Billed - Total Paid across all time)
   const [totalBilledAgg, totalPaidAgg] = await Promise.all([
-    Bill.aggregate([{ $group: { _id: null, total: { $sum: "$total" } } }]),
+    Bill.aggregate([
+      { $match: { status: balanceBearingBills() } },
+      { $group: { _id: null, total: { $sum: "$total" } } },
+    ]),
     Payment.aggregate([{ $group: { _id: null, total: { $sum: "$total" } } }]),
   ]);
   const totalBilled = totalBilledAgg[0]?.total || 0;

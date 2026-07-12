@@ -48,6 +48,7 @@ This project is a **placement/resume-focused full-stack portfolio project**. The
 | ODM | Mongoose 8 |
 | Auth | JSON Web Tokens (JWT) + bcryptjs |
 | Validation | express-validator |
+| PDF Engine | Puppeteer (headless Chrome) — server-side HTML→PDF |
 | Dev Server | nodemon |
 | Environment | dotenv |
 
@@ -69,102 +70,136 @@ TypeScript, NestJS, PostgreSQL, GraphQL, Microservices, TailwindCSS, Redux, Fire
 
 ## 3. REPOSITORY STRUCTURE
 
+> **Restructured 2026-07-10** from a root-level frontend (`src/`, `package.json` at repo root,
+> sitting next to `backend/`) into a standard two-folder `frontend/` + `backend/` layout.
+> Pure directory move — no component logic, imports, or business logic changed.
+> See the Structural pass entry at the bottom of this file for details.
+
 ```
-icepro-new_version/
-├── package.json              ← React frontend scripts (npm start, npm build)
-├── .prettierrc               ← Prettier formatting config (whole repo)
-├── .eslintrc.js              ← ESLint config (frontend / React)
-├── .gitignore                ← Root gitignore (covers .env and backend/.env)
-├── src/                      ← React frontend source
-│   ├── App.js                ← Root: auth guard, screen routing
-│   ├── api.js                ← Centralized Axios instance (JWT injection + silent refresh)
-│   ├── constants.js          ← UI constants (colors, CSS, item catalog)
-│   ├── helpers.js            ← Financial helpers, print/WhatsApp logic
-│   └── components/
-│       ├── Auth.js           ← Sign in & Sign up screens
-│       ├── Dashboard.js      ← Main app shell: sidebar, all pages, modals
-│       ├── AgencyModal.js    ← Add/Edit agency modal
-│       ├── BillModal.js      ← Create bill modal (GST/Non-GST)
-│       ├── PaymentModal.js   ← Record payment modal
-│       ├── ProductsPage.js   ← Products CRUD page
-│       ├── Settings.js       ← Business & bank settings page (owner only)
-│       ├── Vehicles.js       ← ⚠️ UI placeholder — dummy data, no API yet
-│       ├── ReportsPage.js    ← 📊 Analytics dashboard (KPIs + breakdown tables + print)
-│       └── UI.js             ← Shared UI components (Logo, Tag, SC, etc.)
+icepro-new_version/                (repo root)
+├── package.json               ← Convenience scripts only (install:all, dev, build) — no real deps
+├── vercel.json                ← Tells Vercel to build from frontend/ (installCommand/buildCommand/outputDirectory)
+├── .prettierrc                ← Prettier formatting config (whole repo — frontend + backend)
+├── .gitignore                 ← Single root gitignore — covers frontend/, backend/, and both .env files
+├── ICEPRO_MEMORY.md           ← THIS FILE
+├── TDD.md                     ← Original Technical Design Document
+├── project_overview.md        ← High-level project overview
 │
-├── backend/                  ← Node.js + Express backend
-│   ├── src/
-│   │   └── app.js            ← Express server entry point (bootstrap)
-│   ├── package.json          ← Backend dependencies (npm run dev in backend/)
-│   ├── .eslintrc.js          ← ESLint config (Node.js / backend)
-│   ├── .env                  ← Environment variables — NOT committed to git
-│   ├── .env.example          ← Template with all required variable names
-│   ├── config/
-│   │   ├── database.js       ← Mongoose connection logic
-│   │   └── cloudinary.js     ← ⚠️ Scaffolded (Phase 5) — no-op currently
-│   ├── constants/
-│   │   └── index.js          ← Shared enums (ROLES, BILL_TYPES, ORDER_STATUS, etc.)
-│   ├── models/               ← Mongoose schemas
-│   │   ├── User.js
-│   │   ├── Agency.js
-│   │   ├── Bill.js
-│   │   ├── Payment.js
-│   │   ├── Transaction.js
-│   │   ├── Product.js
-│   │   ├── Order.js          ← ⚠️ Schema only — no controller/service yet
-│   │   ├── Counter.js        ← Auto-incrementing invoice number
-│   │   └── Settings.js
-│   ├── routes/               ← Express Router files
-│   │   ├── auth.routes.js
-│   │   ├── agency.routes.js
-│   │   ├── bill.routes.js
-│   │   ├── payment.routes.js
-│   │   ├── product.routes.js
-│   │   ├── order.routes.js   ← ⚠️ Stub — health-check only, no controller yet
-│   │   ├── dashboard.routes.js
-│   │   ├── settings.routes.js
-│   │   └── reports.routes.js  ← 📊 Analytics aggregation endpoint (owner/manager)
-│   ├── controllers/          ← HTTP layer (req → service → res)
-│   │   ├── auth.controller.js
-│   │   ├── agency.controller.js
-│   │   ├── bill.controller.js
-│   │   ├── payment.controller.js
-│   │   ├── product.controller.js
-│   │   ├── dashboard.controller.js
-│   │   ├── settings.controller.js
-│   │   └── reports.controller.js
-│   ├── services/             ← Business logic layer
-│   │   ├── auth.service.js
-│   │   ├── agency.service.js
-│   │   ├── bill.service.js   ← Atomic bill creation (Mongoose session/transaction)
-│   │   ├── payment.service.js ← Atomic payment creation (Mongoose session)
-│   │   ├── product.service.js
-│   │   ├── settings.service.js
-│   │   ├── dashboard.service.js
-│   │   └── reports.service.js   ← $match + $facet aggregation (KPIs + breakdowns)
-│   ├── middleware/
-│   │   ├── auth.middleware.js       ← JWT verification (protect)
-│   │   ├── role.middleware.js       ← RBAC (requireRole)
-│   │   ├── rateLimiter.middleware.js ← Global + strict rate limiters
-│   │   └── error.middleware.js      ← Global error handler (must be last)
-│   ├── validators/           ← express-validator rule sets
-│   │   ├── auth.validator.js
-│   │   ├── agency.validator.js
-│   │   ├── bill.validator.js
-│   │   ├── payment.validator.js
-│   │   ├── product.validator.js
-│   │   ├── settings.validator.js
-│   │   └── reports.validator.js
-│   ├── utils/
-│   │   ├── ApiResponse.js    ← Standard success response class
-│   │   ├── ApiError.js       ← Custom error class
-│   │   └── logger.js         ← Console logger
-│   └── uploads/              ← Multer upload directory (future use)
+├── frontend/                  ← React app (Create React App)
+│   ├── package.json           ← Frontend deps + scripts (npm start, npm run build); "proxy": "http://localhost:8000"
+│   ├── package-lock.json
+│   ├── .eslintrc.js           ← ESLint config (frontend / React) — extends react-app, must live beside react-scripts
+│   ├── .env                   ← Environment variables — NOT committed to git
+│   ├── .env.example           ← Template (REACT_APP_GOOGLE_CLIENT_ID)
+│   ├── public/
+│   │   ├── index.html
+│   │   └── logo.png
+│   └── src/
+│       ├── App.js             ← Root: auth guard, screen routing
+│       ├── api.js             ← Centralized Axios instance (JWT injection + silent refresh)
+│       ├── constants.js       ← UI constants (colors, CSS, item catalog)
+│       ├── helpers.js         ← Financial helpers, print/WhatsApp logic
+│       ├── index.js
+│       └── components/
+│           ├── Auth.js           ← Sign in & Sign up screens
+│           ├── Dashboard.js      ← Main app shell: sidebar, all pages, modals
+│           ├── AgencyModal.js    ← Add/Edit agency modal
+│           ├── BillModal.js      ← Create bill modal (GST/Non-GST)
+│           ├── PaymentModal.js   ← Record payment modal
+│           ├── ProductsPage.js   ← Products CRUD page
+│           ├── InventoryPage.js  ← 🧊 Stock levels, production-shortfall alert, movement ledger
+│           ├── Settings.js       ← Business & bank settings page (owner only)
+│           ├── Vehicles.js       ← ⚠️ UI placeholder — dummy data, no API yet
+│           ├── ReportsPage.js    ← 📊 Analytics dashboard (KPIs + breakdown tables + print)
+│           └── UI.js             ← Shared UI components (Logo, Tag, SC, etc.)
 │
-├── ICEPRO_MEMORY.md          ← THIS FILE
-├── TDD.md                    ← Original Technical Design Document
-└── project_overview.md       ← High-level project overview
+└── backend/                   ← Node.js + Express backend (unmoved — already its own top-level folder)
+    ├── src/
+    │   └── app.js             ← Express server entry point (bootstrap)
+    ├── package.json           ← Backend dependencies (npm run dev in backend/)
+    ├── .eslintrc.js           ← ESLint config (Node.js / backend)
+    ├── .env                   ← Environment variables — NOT committed to git
+    ├── .env.example           ← Template with all required variable names
+    ├── config/
+    │   ├── database.js        ← Mongoose connection logic
+    │   └── cloudinary.js      ← ⚠️ Scaffolded (Phase 5) — no-op currently
+    ├── constants/
+    │   └── index.js           ← Shared enums (ROLES, BILL_TYPES, ORDER_STATUS, etc.)
+    ├── models/                ← Mongoose schemas
+    │   ├── User.js
+    │   ├── Agency.js
+    │   ├── Bill.js            ← + status / revision / items[].productId
+    │   ├── Payment.js
+    │   ├── Transaction.js     ← Financial ledger (bills + payments)
+    │   ├── StockMovement.js   ← 📦 Inventory ledger (immutable, two signed delta columns)
+    │   ├── Product.js         ← + onHand / committed / lowStockThreshold, virtual `available`
+    │   ├── Order.js           ← ⚠️ Schema only — no controller/service yet
+    │   ├── Counter.js         ← Auto-incrementing invoice number
+    │   └── Settings.js
+    ├── scripts/
+    │   └── backfillProductIds.js  ← ⚠️ ONE-TIME migration — see Section 11. Dry-run by default.
+    ├── routes/                ← Express Router files
+    │   ├── auth.routes.js
+    │   ├── agency.routes.js
+    │   ├── bill.routes.js
+    │   ├── payment.routes.js
+    │   ├── product.routes.js
+    │   ├── inventory.routes.js ← 📦 Stock, shortfalls, movement ledger, reconcile
+    │   ├── order.routes.js    ← ⚠️ Stub — health-check only, no controller yet
+    │   ├── dashboard.routes.js
+    │   ├── settings.routes.js
+    │   └── reports.routes.js   ← 📊 Analytics aggregation endpoint (owner/manager)
+    ├── controllers/           ← HTTP layer (req → service → res)
+    │   ├── auth.controller.js
+    │   ├── agency.controller.js
+    │   ├── bill.controller.js
+    │   ├── payment.controller.js
+    │   ├── product.controller.js
+    │   ├── inventory.controller.js
+    │   ├── dashboard.controller.js
+    │   ├── settings.controller.js
+    │   └── reports.controller.js
+    ├── services/              ← Business logic layer
+    │   ├── auth.service.js
+    │   ├── agency.service.js
+    │   ├── inventory.service.js ← 📦 applyBillStock diff engine + manual movements + reconcile
+    │   ├── bill.service.js    ← Atomic bill creation (Mongoose session/transaction) + stock hook
+    │   ├── payment.service.js ← Atomic payment creation (Mongoose session)
+    │   ├── product.service.js
+    │   ├── settings.service.js
+    │   ├── dashboard.service.js
+    │   ├── reports.service.js   ← $match + $facet aggregation (KPIs + breakdowns)
+    │   └── pdf.service.js       ← Puppeteer browser singleton; generateInvoicePdf/generateReportPdf
+    ├── templates/                ← HTML→PDF templates (self-contained, inlined assets)
+    │   ├── assets.js             ← loads logo + fonts.css as base64 (cached at startup)
+    │   ├── invoice.template.js   ← buildInvoiceHTML(bill, agency, settings)
+    │   └── report.template.js    ← buildReportHTML(report, settings, labels)
+    ├── assets/                   ← logo.png (75KB), fonts.css (Playfair+Nunito base64), fonts/build_fonts.js
+    ├── middleware/
+    │   ├── auth.middleware.js       ← JWT verification (protect)
+    │   ├── role.middleware.js       ← RBAC (requireRole)
+    │   ├── rateLimiter.middleware.js ← Global + strict rate limiters
+    │   └── error.middleware.js      ← Global error handler (must be last)
+    ├── validators/            ← express-validator rule sets
+    │   ├── auth.validator.js
+    │   ├── agency.validator.js
+    │   ├── bill.validator.js
+    │   ├── payment.validator.js
+    │   ├── product.validator.js
+    │   ├── inventory.validator.js
+    │   ├── settings.validator.js
+    │   └── reports.validator.js
+    ├── utils/
+    │   ├── ApiResponse.js     ← Standard success response class
+    │   ├── ApiError.js        ← Custom error class
+    │   └── logger.js          ← Console logger
+    └── uploads/               ← Multer upload directory (future use); .gitkeep tracked, contents ignored
 ```
+
+**Note on `.gitignore`**: there is intentionally only ONE `.gitignore` now, at repo root. `backend/.gitignore`
+used to duplicate rules (and its blanket `uploads/` pattern would have silently defeated `uploads/.gitkeep` —
+ignoring the whole directory ignores everything inside it, `.gitkeep` included). The root file now uses
+`backend/uploads/*` + `!backend/uploads/.gitkeep` instead, so the empty folder still survives a fresh clone.
 
 ---
 
@@ -246,10 +281,54 @@ Bill creation uses **Mongoose sessions** for ACID guarantees:
 
 Same pattern applies to `payment.service.js`.
 
+### Inventory — the `applyBillStock` diff engine  📦 *(added 2026-07-12)*
+
+**`inventory.service.js:applyBillStock(prevBill, nextBill, user, session)` is the ONLY code that knows how a
+bill affects stock.** It is a pure diff: it does not care *which* operation you are performing, only what the
+bill looked like before and after. Every bill operation is therefore the same call:
+
+```
+Create   → applyBillStock(null,        bill)
+Edit     → applyBillStock(oldBill,     newBill)
+Deliver  → applyBillStock(pendingBill, deliveredBill)
+Cancel   → applyBillStock(bill,        cancelledBill)
+```
+
+It works because `BILL_STOCK_EFFECTS` (in `constants/index.js`) declares what **one box holds** in each status:
+
+| status | `onHand` | `committed` |
+|---|---|---|
+| `pending` | `0` | `+1` |
+| `delivered` | `−1` | `0` |
+| `cancelled` (and a non-existent bill) | `0` | `0` |
+
+The entire engine is then two lines of arithmetic:
+
+```js
+onHandDelta    = effect(next).onHand    * qtyNext − effect(prev).onHand    * qtyPrev
+committedDelta = effect(next).committed * qtyNext − effect(prev).committed * qtyPrev
+```
+
+Every transition — including ones nobody hand-coded, like *deliver with a changed quantity* or *cancel an
+already-delivered bill* — falls out of that correctly. **This is why the future pending/delivered/editable-bill
+feature is a UI job and not an inventory job: the engine already handles all four transitions today.**
+
+Called **inside** `bill.service.js`'s existing `session.withTransaction()`, so the Bill, its `Transaction` row,
+the `Product` counter `$inc`s and the `StockMovement` ledger rows all commit together or none of them do.
+
+Two details worth remembering:
+- **Line items are summed per product.** A bill may legitimately carry the same product on two lines
+  (different rate or discount), so `buildQtyMap` accumulates rather than overwrites.
+- **A missing product throws** rather than silently skipping the movement. Products are soft-deleted, so a
+  genuinely missing one means the catalog was hard-deleted out from under a bill (e.g. `POST /products/reseed`,
+  which does `deleteMany({})`).
+
 ### Invoice Number Format
 - **GST Bills**: `VMP/25-26/0001` (prefix `VMP`, financial year, 4-digit serial)
 - **Non-GST Bills**: `GB/25-26/0001` (prefix `GB`)
 - Counter stored in `Counter` collection, keyed by `{ type, fiscalYear }`.
+- ⚠️ The number is burned **only for a `delivered` bill**. A `pending` order has no invoice number, so
+  cancelling one leaves no gap in the GST series.
 
 ---
 
@@ -262,7 +341,52 @@ Fields: `firstName`, `lastName`, `username`, `email`, `password` (hashed, `selec
 Fields: `name`, `ownerName`, `mobile`, `city`, `address`, `totalShops`, `gstNo`, `status` (`active|inactive`), `notes`
 
 ### `bills`
-Fields: `billNo`, `billType` (`gst|nongst`), `agencyId`, `agencyName`, `items[]` (`name, qty, rate, disc, amount`), `total`, `prevBalance`, `advanceUsed`, `createdByName`, `createdAt`
+Fields: `billNo`, `billType` (`gst|nongst`), `status`, `deliveredAt`, `revision`, `agencyId`, `agencyName`, `items[]` (**`productId`**, `name, qty, rate, disc, amount`), `subtotal`, `discountAmt`, `total`, `prevBalance`, `advanceUsed`, `grandTotal`, `notes`, `createdByName`, `createdById`, `createdAt`
+
+> **Bill lifecycle (added 2026-07-12).** `status` ∈ `pending | delivered | cancelled`, **default `delivered`**.
+> New bills default to `delivered`, so **today's billing behaviour is unchanged** — a bill is an invoice the
+> moment it is written. The `pending` path is fully implemented and tested in the stock engine, but nothing
+> sends `status: "pending"` until its UI is built.
+>
+> - **`pending`** — an **ORDER**. Reserves stock (`committed`) but books **NO money**: no invoice number,
+>   no `Transaction` row, **not counted in the agency balance**. Freely editable.
+> - **`delivered`** — a real **INVOICE**. Invoice number burned, `Transaction` written, physical stock out.
+> - **`cancelled`** — releases whatever the bill was still holding.
+>
+> **Why pending books no money — this is the load-bearing decision.** Agency balance is derived by summing
+> `Bill.total`, and each bill stores a `prevBalance` snapshot that gets printed on the invoice. If an editable
+> bill counted as money, changing its items would corrupt the `prevBalance` printed on every bill created
+> *after* it, and its `Transaction` row would become a lie. Excluding pending bills from the balance means
+> editing one has **zero** financial consequence — there is nothing to corrupt. It also means cancelling an
+> order no longer burns a GST invoice number (auditors object to gaps in the series), because the number is
+> only assigned at delivery.
+>
+> **`balanceBearingBills()`** in `constants/index.js` is the single definition of "which bills are real money"
+> (`{ $nin: ["pending", "cancelled"] }`). **Everything that sums `Bill.total` must use it** — `bill.service`
+> (agency balance), `dashboard.service`, `reports.service` — or a pending order silently inflates revenue.
+> It is written as `$nin` rather than `= "delivered"` on purpose: pre-migration bills have **no `status` field**,
+> and Mongo treats a missing field as null, which `$nin` matches. An equality match would zero out every
+> agency's balance on unmigrated data.
+>
+> **`revision`** is an optimistic-locking counter. Once bills are editable, two users editing the same pending
+> bill would clobber each other — and worse, the second edit would compute its stock delta from a **stale
+> baseline**, corrupting the ledger permanently. An edit must send the revision it read; a mismatch → 409.
+>
+> **`billNo`** is now optional with a **partial unique index** (`partialFilterExpression: { billNo: { $type: "string" } }`).
+> A plain `unique: true` would reject the *second* pending bill, since every pending bill has `billNo` unset and
+> Mongo treats two missing values as duplicates. ⚠️ Mongoose does **not** drop the old plain-unique index —
+> `scripts/backfillProductIds.js` swaps it.
+>
+> **`items[].productId`** is the hard catalog link inventory needs. Optional, because legacy bills predate it;
+> a line with no `productId` simply moves no stock.
+
+> **Money model (authoritative — keep all surfaces consistent):**
+> - `item.amount` = `qty × rate × (1 − disc/100)` → **NET** (per-item discount baked in)
+> - `subtotal` = `Σ (qty × rate)` → **GROSS** (list value, pre-discount)
+> - `discountAmt` = `subtotal − Σ item.amount` → total per-item discount (**derived** in `bill.service.js`; the client-sent value is ignored to avoid double-counting, since the discount is already in `amount`)
+> - `total` = `subtotal − discountAmt` = `Σ item.amount` → **NET** billed amount
+> - `grandTotal` = `max(0, total + prevBalance)` — `prevBalance` is **signed** (>0 owes, <0 advance credit), so advance naturally reduces the bill. **Never** also subtract `advanceUsed` (that double-counts the advance). `advanceUsed` = `max(0, −prevBalance)` is a display-only field ("Advance Deducted" line).
+> - **Display rule:** the invoice PDF, WhatsApp share, and any total re-derive gross/net/disc% **from the line items** (gross vs net), NOT from the stored `disc` field — legacy/dummy bills have `disc=0` while the discount is baked into `amount`. See `backend/templates/invoice.template.js` and `helpers.js:shareWhatsApp`.
 
 ### `payments`
 Fields: `agencyId`, `agencyName`, `amount`, `cashAmt`, `bankAmt`, `notes`, `recordedBy`, `createdAt`
@@ -271,7 +395,44 @@ Fields: `agencyId`, `agencyName`, `amount`, `cashAmt`, `bankAmt`, `notes`, `reco
 Ledger entries — one created for every bill and payment. Fields: `agencyId`, `type` (`bill|payment`), `amount`, `billId`/`paymentId`, `billNo`, `billType`, `prevBalance`, `advanceUsed`, `cashAmt`, `bankAmt`, `notes`, `recordedBy`/`createdByName`, `createdAt`
 
 ### `products`
-Fields: `name`, `category`, `unit`, `rate`, `discount`, `isActive`, `createdByName`
+Fields: `name`, `rate` (non-GST), `rateGst`, `discount`, `unitsPerBox`, `isActive`
+**Inventory counters** (added 2026-07-12): `onHand`, `committed`, `lowStockThreshold`, plus a
+virtual `available` = `onHand − committed` (derived, never stored; exposed via `toJSON: { virtuals: true }`).
+
+### `stockmovements`  📦 *(added 2026-07-12)*
+**Immutable inventory ledger — the source of truth for all stock.** Same philosophy as `transactions`:
+append-only, never updated or deleted. `Product.onHand`/`committed` are a denormalized CACHE of this
+ledger, written in the same Mongoose session. If they ever disagree, the ledger wins.
+
+Fields: `productId`, `productName`, `type` (`opening|production|sale|return|damage|adjustment`),
+`onHandDelta`, `committedDelta`, `onHandAfter`, `committedAfter`, `refType` (`bill|manual`), `refId`,
+`billNo`, `notes`, `createdByName`, `createdById`, `createdAt`
+
+> **Why TWO delta columns — this is the core idea of the module.**
+> A single stock number cannot answer both questions the business asks:
+> - *"How many boxes are physically in the freezer?"* → `onHand`
+> - *"How many can I still promise a customer?"* → `available` = `onHand − committed`
+>
+> | Event | `onHandDelta` | `committedDelta` |
+> |---|---|---|
+> | Production +10 | `+10` | `0` |
+> | Order taken (10 boxes, pending) | `0` | `+10` |
+> | Order edited 10 → 15 | `0` | `+5` |
+> | Order cancelled | `0` | `−10` |
+> | **Delivered** | `−10` | `−10` |
+> | Damage / melt | `−5` | `0` |
+> | Return from agency | `+5` | `0` |
+>
+> Note the delivery row: `available` is **unchanged**. That is correct — physically shipping boxes you
+> had *already promised* does not change what you can promise the next customer. A one-number model
+> cannot express this.
+>
+> Summing `onHandDelta` rebuilds `onHand`; summing `committedDelta` rebuilds `committed`. The whole
+> ledger is replayable from zero, which is what makes `POST /api/inventory/reconcile` possible.
+
+> **Negative stock is a FEATURE, not an error.** Orders are accepted even with no stock; the resulting
+> negative `available` **is** the production signal, surfaced by `GET /api/inventory/shortfalls` and
+> pinned to the top of the Inventory page. Nothing in the billing path blocks on stock.
 
 ### `counters`
 Fields: `type` (`gst|nongst`), `fiscalYear` (`25-26`), `seq` (auto-increments). Compound unique index on `{type, fiscalYear}`.
@@ -314,6 +475,7 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 | `GET` | `/` | Protected | Get all bills |
 | `POST` | `/` | owner, manager | Create bill (atomic) |
 | `GET` | `/:id` | Protected | Get single bill |
+| `GET` | `/:id/pdf` | Protected | Render invoice as PDF (Puppeteer). Served `Content-Disposition: inline` → opens in browser PDF viewer (print or save). |
 
 ### Payments — `/api/payments`
 | Method | Path | Access | Description |
@@ -332,6 +494,22 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 | `POST` | `/seed` | owner only | Seed from catalog (one-time) |
 | `POST` | `/reseed` | owner only | Destructive reseed |
 
+### Inventory — `/api/inventory`  📦 *(added 2026-07-12)*
+| Method | Path | Access | Description |
+|---|---|---|---|
+| `GET` | `/` | Protected | Stock for every product: `onHand`, `committed`, `available`, plus `isShortfall` / `isLowStock` flags. |
+| `GET` | `/shortfalls` | Protected | **The production alert.** Products where `available < 0`, with the shortfall quantity and the pending bills waiting on each (oldest order first). |
+| `GET` | `/movements` | Protected | The stock ledger, paginated. Filters: `productId`, `type`, `startDate`, `endDate`, `page`, `limit`. |
+| `POST` | `/movements` | owner, manager | Record a **manual** movement: `production`, `return`, `damage`, `adjustment`, `opening`. Body: `{ productId, type, qty, notes? }`. |
+| `GET` | `/summary` | Protected | KPIs: `totalOnHand`, `totalCommitted`, `totalAvailable`, `shortfallCount`, `shortfallBoxes`, `lowStockCount`, `producedThisMonth`, `wastedThisMonth`, `soldThisMonth`. |
+| `POST` | `/reconcile` | **owner** | Replay the ledger, rebuild `onHand`/`committed`, report any drift repaired. `?dryRun=true` to report without repairing. |
+
+> **The sign of a manual movement is derived from its TYPE, never from the client.** `production`/`return`/
+> `opening` force positive, `damage` forces negative; only `adjustment` accepts a signed quantity (it is a
+> correction, so it must go either way). This kills a whole class of bug where *"damage: +50 boxes"* would
+> silently **add** stock. `sale` is **service-only** — it is derived from bill state and is rejected by both the
+> validator and the service if posted by hand.
+
 ### Settings — `/api/settings`
 | Method | Path | Access | Description |
 |---|---|---|---|
@@ -347,6 +525,7 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 | Method | Path | Access | Description |
 |---|---|---|---|
 | `GET` | `/` | owner, manager | Analytics — KPIs (revenue, boxes sold, discounts, invoices) + a dynamic breakdown that reshapes by filter. Query params: `startDate`, `endDate` (YYYY-MM-DD, default = current month), `agencyId`, `productName`. One `$match` + `$facet` aggregation; `meta.scenario` ∈ `products` \| `agencies-for-product` \| `products+agencies`. |
+| `GET` | `/pdf` | owner, manager | Same filters as `/` — renders the report (logo + KPI cards + breakdown tables) as an `inline` PDF via Puppeteer. |
 
 > **Reports response shape:** `{ kpis:{totalRevenue,totalBoxesSold,totalDiscounts,totalInvoices}, primaryTable:[…], secondaryTable:[…]|null, meta:{scenario,startDate,endDate,filters} }`. `totalDiscounts` = gross list value − net revenue (captures per-item `disc%` **and** bill-level `discountAmt`). Row `percentOfTotal` is computed vs. each table's own revenue sum (in Node, divide-by-zero guarded).
 
@@ -363,8 +542,11 @@ Three roles are enforced via the `requireRole()` middleware:
 | Create bills | ❌ | ✅ | ✅ |
 | Record payments | ❌ | ✅ | ✅ |
 | Create/Edit products | ❌ | ✅ | ✅ |
+| View inventory / shortfalls / ledger | ✅ | ✅ | ✅ |
+| Record stock movements (production, damage, return, adjustment) | ❌ | ✅ | ✅ |
 | Deactivate agencies | ❌ | ❌ | ✅ |
 | Delete products | ❌ | ❌ | ✅ |
+| Reconcile inventory (rebuild counters from ledger) | ❌ | ❌ | ✅ |
 | View/Edit settings | ❌ | ❌ | ✅ |
 
 **Role assignment**: New accounts always default to `staff`. Role changes must be done directly in MongoDB (no admin panel yet).
@@ -409,11 +591,14 @@ npm run dev
 
 ### Terminal 2 — Start Frontend
 ```bash
-cd /path/to/icepro-new_version
+cd /path/to/icepro-new_version/frontend
 npm start
 # Starts React on http://localhost:3000
 # All /api/* requests are proxied to http://localhost:8000 automatically
 ```
+
+> Or from the repo root: `npm run dev:backend` / `npm run dev:frontend` (or `npm run dev` for both),
+> using the convenience root `package.json` — see Section 3.
 
 ### Environment Variables (`backend/.env`)
 ```
@@ -431,7 +616,7 @@ MAX_LOGIN_ATTEMPTS=5
 LOCK_TIME_MINUTES=15
 ```
 
-> ⚠️ Do NOT commit `.env` to git. It is listed in `backend/.gitignore`.
+> ⚠️ Do NOT commit `.env` to git. Both `frontend/.env` and `backend/.env` are covered by the single root `.gitignore`.
 
 ---
 
@@ -448,13 +633,25 @@ LOCK_TIME_MINUTES=15
 | 6 | Frontend Integration (React migrated from Firebase to Axios + JWT) | ✅ Complete |
 | 7 | Documentation (this file) | ✅ Complete |
 | 8 | Reports / Analytics Module (`$facet` aggregation endpoint + `📊 Reports` React page) | ✅ Complete |
+| 9 | Repo restructure: root-level frontend → standard `frontend/` + `backend/` two-folder layout | ✅ Complete |
+| 10 | Server-side PDF pipeline (Puppeteer): print-ready invoice + report PDFs, single "Print" button opens PDF in browser viewer (print or save) | ✅ Complete |
+| 11 | **Inventory Module** — `StockMovement` ledger, `onHand`/`committed`/`available` model, `applyBillStock` diff engine, production-shortfall alert, `🧊 Inventory` React page. Also lays the full groundwork for the pending/delivered editable-bill feature. | ✅ Complete |
 
 ---
 
 ## 11. KNOWN ISSUES & NOTES
 
+- **⚠️ RUN THE INVENTORY MIGRATION ONCE**: `cd backend && node scripts/backfillProductIds.js` (dry run — writes
+  nothing) then `--commit`. It (1) swaps Bill's plain-unique `billNo_1` index for the **partial** unique index —
+  Mongoose will NOT do this for you, and until it runs, a second `pending` bill would be rejected as a duplicate;
+  (2) stamps `status: "delivered"` on existing bills; (3) backfills `items[].productId` by matching the line's
+  free-text `name` against the catalog. It writes **no** `StockMovement` rows and touches **no** stock counters —
+  historical bills do not retroactively drain inventory. Real stock starts from today, entered as `opening`
+  movements on the Inventory page. Line items matching no product are left `productId: null` and reported.
+- **Inventory starts at zero.** Every product begins with `onHand: 0`. Enter real counts via the Inventory page
+  → *Record Movement* → **Opening Stock**, or stock will read as a shortfall the moment anything is billed.
+- **Orders Feature is Stubbed**: The `Order` model and routes exist but the UI only shows a placeholder. The backend `order.routes.js` exists but `order.controller.js` / `order.service.js` need full implementation. (`Order.items[]` already carries `productId`, so it can drive inventory when built.)
 - **No Admin Panel for Role Management**: Changing a user's role must be done directly in MongoDB Compass or via a one-off Node script. A future `/api/users` admin route should be added.
-- **Orders Feature is Stubbed**: The `Order` model and routes exist but the UI only shows a placeholder. The backend `order.routes.js` exists but `order.controller.js` / `order.service.js` need full implementation.
 - **No Token Refresh**: The refresh token helpers are scaffolded in `utils/tokens.js` but the `/api/auth/refresh` endpoint does not yet exist. JWT access tokens expire in 15 min (or `ACCESS_TOKEN_EXPIRY`). The `api.js` client already implements the silent refresh queue — only the server endpoint is missing.
 - **Vehicles Page is Placeholder**: `Vehicles.js` renders a UI stub with dummy vehicle data. A `Vehicle` model + routes need to be built.
 - **No Image Upload Yet**: Cloudinary env vars are scaffolded but Multer/Cloudinary integration is not implemented (`config/cloudinary.js` is a no-op).
@@ -465,6 +662,18 @@ LOCK_TIME_MINUTES=15
 ## 12. NEXT STEPS / ROADMAP
 
 ### Immediate (To Complete the MERN Portfolio)
+- [ ] **Pending / Delivered Bills (editable orders)** — ⭐ *the inventory backend for this is ALREADY DONE.*
+  `Bill.status`, `Bill.revision`, and the `applyBillStock(prev, next)` diff engine all exist and are tested;
+  pending bills are already excluded from the agency balance and burn no invoice number. What remains is
+  essentially UI + three thin endpoints:
+  - `PATCH /api/bills/:id` — edit a `pending` bill. Load the old bill, build the new one, call
+    `applyBillStock(oldBill, newBill, user, session)` inside a session. **Must check `revision`** and reject a
+    mismatch with 409 (optimistic locking), or a concurrent edit computes its stock delta from a stale baseline
+    and corrupts the ledger.
+  - `POST /api/bills/:id/deliver` — assign `billNo` via `Counter.getNextInvoiceNumber()`, compute `prevBalance`,
+    write the `Transaction` row, then `applyBillStock(pendingBill, deliveredBill, …)`.
+  - `POST /api/bills/:id/cancel` — `applyBillStock(bill, cancelledBill, …)`.
+  - Frontend: a status toggle in `BillModal`, an "Orders / Pending" list, and an edit view.
 - [ ] **User Management Page** (owner only): List all users, change roles, deactivate accounts → `GET/PATCH /api/users`
 - [ ] **Orders Implementation**: Full backend CRUD + frontend UI for the Orders module
 - [ ] **Vehicles Module**: Model, routes, and UI for managing delivery vehicles
@@ -475,8 +684,8 @@ LOCK_TIME_MINUTES=15
 - [ ] **Deployment**: Deploy backend on Railway/Render, frontend on Vercel, point to same MongoDB Atlas cluster
 
 ### Future Production Features
-- [ ] **PDF Invoice Generation (server-side)**: Use `pdfkit` or `puppeteer` to generate real PDF invoices
-- [ ] **WhatsApp Integration**: Use Twilio or WhatsApp Cloud API to send invoices
+- [x] **PDF Invoice + Report Generation (server-side)** *(done 2026-07-11)*: Puppeteer HTML→PDF pipeline. `pdf.service.js` owns a reused, self-healing browser singleton (launched lazily, closed on SIGTERM/SIGINT). Templates in `backend/templates/` (`invoice.template.js`, `report.template.js`) with inlined base64 logo (`assets/logo.png`, resized 609KB→75KB) + fonts (`assets/fonts.css` — Playfair Display + Nunito, latin subset, embedded so it renders offline). Routes served `inline`; frontend `PrintBillButton` / ReportsPage Print button fetch the PDF with the JWT auth header and open it in a new tab (native viewer = print **or** save). Retired the old client-side `printInvoice`/`printReport`.
+- [ ] **WhatsApp Integration**: Use Twilio or WhatsApp Cloud API to send invoices (currently `helpers.js:shareWhatsApp` opens a pre-filled wa.me link)
 - [x] **Reports & Analytics Module** *(done 2026-07-10)*: `GET /api/reports` (`$facet` aggregation) + `📊 Reports` React page — KPI cards, product/agency breakdown tables with `% of total` and `avg ₹/box`, date-preset + agency + product filters, and a print-to-PDF view. (Visual charts via Chart.js/Recharts remain an optional future enhancement.)
 - [ ] **Offline Support**: PWA + IndexedDB for basic offline bill creation
 
@@ -500,6 +709,27 @@ Update `ICEPRO_MEMORY.md` whenever:
 
 ---
 
-*Last Updated: 2026-07-10 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
+*PDF pipeline: 2026-07-11 — added server-side Puppeteer PDF generation for invoices (`GET /api/bills/:id/pdf`) and reports (`GET /api/reports/pdf`), both `inline`; single "Print" button opens the PDF in the browser viewer. Fixed two money bugs surfaced during this work: (1) `bill.service.js` double-counted the discount (`total = Σnet − discountAmt`) — now `subtotal`=gross, `discountAmt`=derived, `total`=net; (2) `grandTotal` double-subtracted advance credit — now `max(0, total + signed prevBalance)`. Invoice/WhatsApp now derive per-item disc% from gross-vs-net so the DISC% column is correct even on `disc=0` legacy data. Retired client-side `printInvoice`/`printReport`.*
+
+*Inventory module: 2026-07-12 — added the `StockMovement` ledger (immutable, append-only, with TWO signed delta
+columns: `onHandDelta` + `committedDelta`), `Product.onHand`/`committed` as a session-consistent cache with a derived
+`available` virtual, and `inventory.service.js:applyBillStock(prev, next)` — a single pure diff engine that handles
+bill create / edit / deliver / cancel as the same call. Stock is deliberately allowed to go negative: a negative
+`available` IS the production signal, surfaced by `GET /api/inventory/shortfalls` and pinned to the top of the new
+`🧊 Inventory` page along with the pending orders waiting on each product. New API namespace `/api/inventory`
+(stock, shortfalls, movements, summary, owner-only reconcile). The sign of a manual movement is derived from its
+TYPE, never the client, so "damage: +50" can never add stock; `sale` is service-only.*
+
+*Also laid the complete groundwork for the FUTURE pending/delivered editable-bill feature: `Bill.status`
+(default `delivered` → today's behaviour is unchanged), `Bill.revision` for optimistic locking, `items[].productId`,
+and a partial unique index on `billNo` so pending bills can coexist without one. The key decision: a pending bill is
+an ORDER, not an invoice — it reserves stock but books NO money (no invoice number, no `Transaction` row, excluded
+from the agency balance via `balanceBearingBills()`), which is exactly what makes editing it safe and what stops a
+cancelled order from leaving a gap in the GST series. `dashboard.service` and `reports.service` were both updated to
+exclude pending/cancelled bills, or a pending order would have silently inflated revenue. Verified end-to-end against
+a throwaway database: 20/20 checks incl. the invariant that delivering a pending order leaves `available` unchanged.*
+
+*Last Updated: 2026-07-12 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
 *Cleanup pass: 2026-07-10 — removed Firebase remnants, dead scripts, unused packages; added Prettier/ESLint; updated repo structure docs.*
 *Reports module: 2026-07-10 — added `GET /api/reports` (`$facet` aggregation) + `📊 Reports` analytics page; replaced Bill's standalone `{agencyId}` index with compound `{agencyId, createdAt}`. Also fixed two pre-existing build blockers in the working tree: a trailing comma in root `package.json` and a missing `React` import in `src/index.js`.*
+*Structural pass: 2026-07-10 — moved the root-level React app into `frontend/` (git history preserved via `git mv`); `backend/` was already its own top-level folder and did not move. Consolidated `backend/.gitignore` into one root `.gitignore` (also fixed a latent bug where its blanket `uploads/` rule would have defeated `uploads/.gitkeep`). Added a root convenience `package.json` (scripts only, no new deps) and a root `vercel.json` pointing the build at `frontend/`. Zero component logic, imports, API routes, env var names, or business logic changed.*

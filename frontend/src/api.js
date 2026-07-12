@@ -99,4 +99,44 @@ api.interceptors.response.use(
   }
 );
 
+// ── PDF print / view ──────────────────────────────────────────────────────────
+// The server renders print-ready PDFs (Puppeteer). We open them in a new browser
+// tab so the native PDF viewer's Print AND Save buttons are both available — one
+// "Print" button in the UI, user decides to print or download from there.
+//
+// Auth note: the access token lives in the Authorization header (not a cookie), so
+// a plain window.open(url) would hit the API unauthenticated (401). Instead we
+// fetch the PDF WITH the interceptor's auth header, then point the tab at a blob
+// URL. The tab is opened synchronously (before any await) so pop-up blockers,
+// which only allow window.open inside a user gesture, let it through.
+
+const openPdfInTab = async (blobPromise) => {
+  // Open the tab immediately (still inside the click's synchronous context).
+  const tab = window.open("", "_blank");
+  if (tab) {
+    tab.document.write(
+      "<title>Generating PDF…</title><body style='font-family:sans-serif;padding:40px;color:#555'>⏳ Generating PDF…</body>"
+    );
+  }
+  try {
+    const blob = await blobPromise;
+    const url  = URL.createObjectURL(blob);
+    if (tab) tab.location.href = url;
+    else window.location.href = url;   // Pop-up blocked → fall back to same tab
+    // Revoke well after the viewer has loaded the document.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    if (tab) tab.close();
+    throw err;
+  }
+};
+
+// Open a single bill's invoice PDF in a new tab (print or save from the viewer).
+export const printBillPdf = (billId) =>
+  openPdfInTab(api.get(`/bills/${billId}/pdf`, { responseType: "blob" }));
+
+// Open the sales report PDF for the given filters (same shape as GET /reports).
+export const printReportPdf = (params = {}) =>
+  openPdfInTab(api.get("/reports/pdf", { params, responseType: "blob" }));
+
 export default api;

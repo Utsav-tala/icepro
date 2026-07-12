@@ -15,6 +15,7 @@
 
 const mongoose = require("mongoose");
 const Bill = require("../models/Bill");
+const { balanceBearingBills } = require("../constants");
 
 // Round to 2 decimals, coercing null/NaN to 0 (kills float noise from Σ of .toFixed(2) values)
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -61,7 +62,12 @@ const getReportData = async ({ startDate, endDate, agencyId, productName } = {})
   const cleanProduct = productName ? String(productName).trim() : "";
 
   // ── $match: date range (+ agency if given) ──
-  const match = { createdAt: { $gte: start, $lte: end } };
+  // Pending orders and cancelled bills are excluded: neither is realised revenue, and
+  // counting a pending order here would inflate every KPI on this page.
+  const match = {
+    createdAt: { $gte: start, $lte: end },
+    status:    balanceBearingBills(),
+  };
   if (agencyId) match.agencyId = new mongoose.Types.ObjectId(agencyId);
 
   // ── KPI facet: one $group, no unwind needed ──

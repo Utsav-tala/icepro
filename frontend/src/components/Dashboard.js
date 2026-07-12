@@ -2,12 +2,13 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { C, ITEM_CATALOG }                    from "../constants";
-import { computeBalance, balanceDisplay, genInvNo, printInvoice, shareWhatsApp } from "../helpers";
-import { Tag, SC, Logo, PageHeader }          from "./UI";
+import { computeBalance, balanceDisplay, genInvNo, shareWhatsApp } from "../helpers";
+import { Tag, SC, Logo, PageHeader, PrintBillButton } from "./UI";
 import { AgencyModal }                        from "./AgencyModal";
 import { CreateBillModal }                    from "./BillModal";
 import { PaymentModal }                       from "./PaymentModal";
 import { ProductsPage }                       from "./ProductsPage";
+import { InventoryPage }                      from "./InventoryPage";
 import { VehiclesPage }                       from "./Vehicles";
 import { SettingsPage }                       from "./Settings";
 import { ReportsPage }                        from "./ReportsPage";
@@ -21,7 +22,7 @@ function BillTypeBadge({ billType }) {
 }
 
 // ── Agency Invoice History Modal ──────────────────────────────────────────────
-// FIX: appSettings now passed in and forwarded to printInvoice / shareWhatsApp
+// appSettings forwarded to shareWhatsApp; PDF printing goes through PrintBillButton (server-rendered)
 function AgencyHistoryModal({ agency, bills, onClose, appSettings }) {
   const ab    = bills.filter(b => b.agencyId === agency.id);
   const now   = new Date();
@@ -67,8 +68,7 @@ function AgencyHistoryModal({ agency, bills, onClose, appSettings }) {
                   <div><BillTypeBadge billType={b.billType} /></div>
                   <div style={{ fontSize: 11, color: C.textLight }}>{new Date(b.createdAt).toLocaleDateString("en-IN") || "—"}</div>
                   <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
-                  {/* FIX: appSettings now passed correctly */}
-                  <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => printInvoice(b, agency, appSettings)}>🖨️</button>
+                  <PrintBillButton bill={b} label="" style={{ fontSize: 10, padding: "4px 8px" }} />
                   <button className="btn btn-green"  style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => shareWhatsApp(b, agency, appSettings)}>💬</button>
                 </div>
               ))}
@@ -163,7 +163,7 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
             </div>
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-yellow" style={{ flex: 1 }} onClick={() => printInvoice(b, ag, appSettings)}>🖨️ Print Bill</button>
+            <PrintBillButton bill={b} label="Print Bill" style={{ flex: 1 }} />
             <button className="btn btn-green"  style={{ flex: 1 }} onClick={() => shareWhatsApp(b, ag, appSettings)}>💬 WhatsApp</button>
           </div>
         </div>
@@ -288,6 +288,7 @@ export function Dashboard({ user, onLogout }) {
   const [orders,     setOrders]     = useState([]);
   const [payments,   setPayments]   = useState([]);
   const [products,   setProducts]   = useState([]);
+  const [invSummary, setInvSummary] = useState(null);
   const [loadingData,setLoadingData]= useState(true);
 
   const [agMod,   setAgMod]   = useState({ open: false, editing: null });
@@ -317,20 +318,24 @@ export function Dashboard({ user, onLogout }) {
 
     async function fetchData() {
       try {
-        const [agRes, bRes, pRes, prodRes, setRes] = await Promise.all([
+        const [agRes, bRes, pRes, prodRes, setRes, invRes] = await Promise.all([
           api.get('/agencies'),
           api.get('/bills'),
           api.get('/payments'),
           api.get('/products'),
-          api.get('/settings')
+          api.get('/settings'),
+          api.get('/inventory/summary')
         ]);
         if (agRes.success) setAgencies(norm(agRes.data.agencies));
         if (bRes.success) setBills(normRef(bRes.data.bills));
         if (pRes.success) setPayments(normRef(pRes.data.payments));
+        // Products carry onHand/committed/available — BillModal uses them to show live
+        // stock as items are added, with no second request.
         if (prodRes.success) setProducts(norm(prodRes.data.products));
         if (setRes.success && setRes.data) {
            setAppSettings({ business: setRes.data.business, bank: setRes.data.bank });
         }
+        if (invRes.success) setInvSummary(invRes.data);
         setOrders([]); // Orders not implemented in backend yet
       } catch (e) {
         console.error("Failed to load dashboard data", e);
@@ -390,6 +395,9 @@ export function Dashboard({ user, onLogout }) {
     { id: "billing",   icon: "🧾", label: "Billing" },
     { id: "agencies",  icon: "🏢", label: "Agencies" },
     { id: "products",  icon: "📦", label: "Products" },
+    // Badge = products promised beyond stock on hand. It is the production alert, so it
+    // belongs where it is seen without opening anything.
+    { id: "inventory", icon: "🧊", label: "Inventory", badge: invSummary?.shortfallCount || 0 },
     { id: "vehicles",  icon: "🚚", label: "Vehicles" },
     { id: "reports",   icon: "📊", label: "Reports" },
   ];
@@ -501,7 +509,7 @@ export function Dashboard({ user, onLogout }) {
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn btn-yellow" style={{ flex: 1 }} onClick={() => printInvoice(b, ag, appSettings)}>🖨️ Print Bill</button>
+                <PrintBillButton bill={b} label="Print Bill" style={{ flex: 1 }} />
                 <button className="btn btn-green"  style={{ flex: 1 }} onClick={() => shareWhatsApp(b, ag, appSettings)}>💬 WhatsApp</button>
               </div>
             </div>
@@ -693,7 +701,7 @@ export function Dashboard({ user, onLogout }) {
                       <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"}</div>
                       <div style={{ fontSize: 10, color: C.textLight, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.createdByName || "—"}</div>
                       <div className="mobile-bill-actions" style={{ display: "flex", gap: 8 }}>
-                        <button className="btn btn-yellow" style={{ fontSize: 13, padding: "6px 14px" }} onClick={e => { e.stopPropagation(); printInvoice(b, agencies.find(a => a.id === b.agencyId), appSettings); }}>🖨️ Print</button>
+                        <PrintBillButton bill={b} label="Print" style={{ fontSize: 13, padding: "6px 14px" }} />
                         <button className="btn btn-green"  style={{ fontSize: 13, padding: "6px 14px" }} onClick={e => { e.stopPropagation(); shareWhatsApp(b, agencies.find(a => a.id === b.agencyId), appSettings); }}>💬 WhatsApp</button>
                       </div>
                     </div>
@@ -872,7 +880,7 @@ export function Dashboard({ user, onLogout }) {
                       <div><BillTypeBadge billType={b.billType} /></div>
                       <div style={{ fontSize: 11, color: C.textLight }}>{b.createdAt ? new Date(b.createdAt).toLocaleDateString("en-IN") : "—"}</div>
                       <div style={{ fontWeight: 800, color: C.redDark }}>Rs.{(b.total || 0).toLocaleString()}</div>
-                      <button className="btn btn-yellow" style={{ fontSize: 10, padding: "4px 8px" }} onClick={e => { e.stopPropagation(); printInvoice(b, selAgency, appSettings); }}>🖨️</button>
+                      <PrintBillButton bill={b} label="" style={{ fontSize: 10, padding: "4px 8px" }} />
                       <button className="btn btn-green"  style={{ fontSize: 10, padding: "4px 8px" }} onClick={e => { e.stopPropagation(); shareWhatsApp(b, selAgency, appSettings); }}>💬</button>
                     </div>
                   ))
@@ -888,6 +896,10 @@ export function Dashboard({ user, onLogout }) {
         )}
 
         {/* ════ VEHICLES ════ */}
+        {page === "inventory" && (
+          <InventoryPage currentUser={user} />
+        )}
+
         {page === "vehicles" && <VehiclesPage />}
 
         {/* ════ REPORTS ════ */}

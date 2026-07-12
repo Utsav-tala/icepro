@@ -9,6 +9,12 @@ const { ORDER_STATUS } = require("../constants");
 // ── Line-item sub-schema (same structure as Bill.items) ───────────────────────
 const orderItemSchema = new mongoose.Schema(
   {
+    // Hard catalog link, same as Bill.items[].productId — kept in step so that when
+    // this module is finally implemented it can drive inventory without a schema change.
+    productId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref:  "Product",
+    },
     name:   { type: String, required: true },
     qty:    { type: Number, required: true, min: 0 },
     rate:   { type: Number, required: true, min: 0 },

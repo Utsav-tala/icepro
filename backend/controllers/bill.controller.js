@@ -2,6 +2,7 @@
 // HTTP layer for bills — thin, delegates all logic to bill.service.js.
 
 const billService = require("../services/bill.service");
+const pdfService  = require("../services/pdf.service");
 const ApiResponse = require("../utils/ApiResponse");
 
 /**
@@ -53,4 +54,27 @@ const getBillById = async (req, res, next) => {
   }
 };
 
-module.exports = { createBill, getBills, getBillById };
+/**
+ * @desc    Render a bill as a print-ready PDF (server-side Puppeteer render)
+ * @route   GET /api/bills/:id/pdf
+ * @access  Private — any authenticated user
+ *
+ * Served `inline` so the browser opens it in its built-in PDF viewer, where the
+ * user can Print or Save — matching the single-button "print page" UX.
+ */
+const downloadBillPdf = async (req, res, next) => {
+  try {
+    const { pdfBuffer, filename } = await pdfService.generateInvoicePdf(req.params.id);
+    res.set({
+      "Content-Type":        "application/pdf",
+      "Content-Disposition": `inline; filename="${filename}"`,
+      "Content-Length":      pdfBuffer.length,
+    });
+    res.end(pdfBuffer);
+  } catch (error) {
+    // Errors flow to the JSON error handler (so a 404 stays JSON, not a broken PDF)
+    next(error);
+  }
+};
+
+module.exports = { createBill, getBills, getBillById, downloadBillPdf };

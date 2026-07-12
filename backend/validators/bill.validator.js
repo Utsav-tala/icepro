@@ -3,7 +3,7 @@
 
 const { body, param, validationResult } = require("express-validator");
 const ApiError = require("../utils/ApiError");
-const { BILL_TYPES } = require("../constants");
+const { BILL_TYPES, BILL_STATUS } = require("../constants");
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -26,8 +26,21 @@ const createBillValidation = [
     .isIn(Object.values(BILL_TYPES))
     .withMessage(`Bill type must be one of: ${Object.values(BILL_TYPES).join(", ")}`),
 
+  // Only pending and delivered may be created. `cancelled` is a transition, not a
+  // starting state. Omitting this defaults to `delivered` — today's behaviour.
+  body("status")
+    .optional()
+    .isIn([BILL_STATUS.PENDING, BILL_STATUS.DELIVERED])
+    .withMessage(`Status must be ${BILL_STATUS.PENDING} or ${BILL_STATUS.DELIVERED}`),
+
   body("items")
     .isArray({ min: 1 }).withMessage("Bill must have at least one item"),
+
+  // Optional so legacy clients still work, but the frontend always sends it — without
+  // it the line moves no stock, because inventory cannot safely match on a free-text name.
+  body("items.*.productId")
+    .optional()
+    .isMongoId().withMessage("Invalid product ID format"),
 
   body("items.*.name")
     .trim()
