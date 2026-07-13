@@ -94,6 +94,44 @@ const verifyRefreshToken = (token) =>
 const hashRefreshToken = (rawToken) =>
   crypto.createHash("sha256").update(rawToken).digest("hex");
 
+// ── Signup ticket ─────────────────────────────────────────────────────────────
+// Proof that the holder already passed the secret-code gate.
+//
+// Why this exists: the gate USED to be a number in React state (`step`), so anything
+// that called setStep(2) walked straight past it — which is exactly what the Google
+// button did. The server's only defence was re-checking the raw secret at the very last
+// request, so a user could fill in the entire form and only then be told "invalid secret
+// code". The gate has to be a CREDENTIAL, not a UI variable.
+//
+// Now: the secret code buys a short-lived signed ticket, and NO account can be created
+// without one. Any signup route added in future inherits the gate automatically, because
+// it has to demand a ticket. The raw secret also stops living in React state and being
+// re-transmitted at the end.
+const SIGNUP_TICKET_PURPOSE = "signup";
+
+const createSignupTicket = () =>
+  jwt.sign(
+    { purpose: SIGNUP_TICKET_PURPOSE },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.SIGNUP_TICKET_EXPIRY || "15m" }
+  );
+
+/**
+ * @returns {boolean} true if the ticket is a valid, unexpired signup ticket.
+ * Never throws — the caller decides what a failure means.
+ */
+const verifySignupTicket = (ticket) => {
+  if (!ticket) return false;
+  try {
+    const decoded = jwt.verify(ticket, process.env.JWT_SECRET);
+    // The purpose check matters: JWT_SECRET also signs ACCESS tokens, so without it any
+    // logged-in user's access token would be accepted here as a signup ticket.
+    return decoded?.purpose === SIGNUP_TICKET_PURPOSE;
+  } catch {
+    return false;
+  }
+};
+
 module.exports = {
   createVerificationToken,
   hashToken,
@@ -101,6 +139,8 @@ module.exports = {
   generateRefreshToken,
   verifyRefreshToken,
   hashRefreshToken,
+  createSignupTicket,
+  verifySignupTicket,
   REFRESH_COOKIE,
   REFRESH_COOKIE_PATH,
   refreshCookieOptions,

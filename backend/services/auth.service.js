@@ -14,6 +14,8 @@ const {
   generateRefreshToken,
   verifyRefreshToken,
   hashRefreshToken,
+  createSignupTicket,
+  verifySignupTicket,
 } = require("../utils/tokens");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -67,15 +69,35 @@ const issueSession = async (user, deviceInfo = "") => {
 // costs the same ~100ms as a real check — see loginUser for why that matters.
 const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
 
-// ── Register (email/password) ─────────────────────────────────────────────────
-const registerUser = async (userData) => {
-  const { secretCode, firstName, lastName, username, email, mobile } = userData;
-
-  // 1. Validate secret code
+// ── The signup gate ───────────────────────────────────────────────────────────
+// Exchange the secret code for a short-lived ticket. This is the ONLY way to get one.
+const issueSignupTicket = (secretCode) => {
   const validSecret = process.env.SIGNUP_SECRET;
-  if (!validSecret || secretCode !== validSecret) {
+  if (!validSecret || !secretCode || secretCode !== validSecret) {
     throw new ApiError(403, "Invalid secret code. Ask your administrator for the signup code.");
   }
+  return { valid: true, signupTicket: createSignupTicket() };
+};
+
+// EVERY path that creates an account must call this first. Making the gate a credential
+// rather than a step number is the whole point: there is no client-side state to skip.
+// If a future signup route forgets this line, it creates accounts for anyone — so it is
+// deliberately a single, obvious, unmissable call.
+const assertSignupAllowed = (signupTicket) => {
+  if (!verifySignupTicket(signupTicket)) {
+    throw new ApiError(
+      403,
+      "Your signup session has expired or is invalid. Please enter the secret code again."
+    );
+  }
+};
+
+// ── Register (email/password) ─────────────────────────────────────────────────
+const registerUser = async (userData) => {
+  const { signupTicket, firstName, lastName, username, email, mobile } = userData;
+
+  // 1. The gate — no ticket, no account. See assertSignupAllowed().
+  assertSignupAllowed(signupTicket);
 
   // 2. Uniqueness checks — clear field-level errors
   const existingEmail = await User.findOne({ email: email.toLowerCase() });
@@ -326,11 +348,12 @@ const googleSignInOnly = async (idToken, deviceInfo = "") => {
 // create the account. No password to invent, no verification email round-trip — Google
 // has already proved the user owns the mailbox, which is the only thing that email was
 // establishing. The user lands in the dashboard signed in.
-const registerWithGoogle = async ({ secretCode, idToken, username, mobile }, deviceInfo = "") => {
-  const validSecret = process.env.SIGNUP_SECRET;
-  if (!validSecret || secretCode !== validSecret) {
-    throw new ApiError(403, "Invalid secret code. Ask your administrator for the signup code.");
-  }
+const registerWithGoogle = async ({ signupTicket, idToken, username, mobile }, deviceInfo = "") => {
+  // The gate. This is the path that used to be skippable from the UI — the Google button
+  // called setStep(2) directly, so a user could reach the details form without ever
+  // entering the secret code. The server refused at the end, but only after they had
+  // filled everything in. Now there is no ticket to present, so it fails immediately.
+  assertSignupAllowed(signupTicket);
 
   const { googleId, email, firstName, lastName } = await verifyGoogleToken(idToken);
 
@@ -512,6 +535,7 @@ const resendVerification = async (userId) => {
 };
 
 module.exports = {
+  issueSignupTicket,
   registerUser,
   registerWithGoogle,
   loginUser,

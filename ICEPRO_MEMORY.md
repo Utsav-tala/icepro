@@ -219,9 +219,32 @@ User clicks email link → Frontend VerifyEmailScreen
   → Returns JWT, Auto-logs user into Dashboard
 ```
 
-**Google signup** *(added 2026-07-13)*: secret code + a verified Google ID token creates the account outright —
+**Google signup** *(added 2026-07-13)*: a signup ticket + a verified Google ID token creates the account outright —
 `authProvider: "google"`, `isEmailVerified: true`, **no password, no verification email**. Google has already
 proved the user owns the mailbox, which is the only thing that email was establishing.
+
+### 🔐 The signup gate is a TICKET, not a step number *(2026-07-13)*
+
+```
+POST /auth/check-secret  { secretCode }  →  { signupTicket }   (JWT, purpose:"signup", 15m)
+POST /auth/register          — REQUIRES a valid signupTicket
+POST /auth/google-register   — REQUIRES a valid signupTicket
+```
+
+**The bug this fixes.** The gate used to be a React number (`step`), so *anything* that called `setStep(2)`
+walked past it — and the Google button on step 1 did exactly that. You could reach the details form having
+**never entered the secret code**. The server still refused at the very end (it re-checked the raw secret), so it
+was never an auth *bypass* — but you could fill in the whole form before being told. The lesson generalises:
+**a gate made of UI state is not a gate.**
+
+Now the secret code buys a short-lived server-signed ticket, and `assertSignupAllowed()` is the first line of
+*every* account-creating path. There is no client state to skip, the raw secret stops living in React and being
+re-transmitted at the end, a leaked ticket dies in 15 minutes, and **any signup route added in future inherits
+the gate**, because it has to present one.
+
+> **⚠️ `verifySignupTicket` MUST check the `purpose` claim.** `JWT_SECRET` signs access tokens *and* signup
+> tickets. Without the claim check, **any logged-in user's access token would be accepted as a signup ticket**.
+> There is a test for exactly this.
 
 ### Session model — access + rotating refresh  🔑 *(rebuilt 2026-07-13)*
 
@@ -494,15 +517,15 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 ### Auth — `/api/auth`
 | Method | Path | Access | Description |
 |---|---|---|---|
-| `POST` | `/register` | Public | Create account (no password; emails a link that sets it) |
+| `POST` | `/register` | Public | Create account (**requires `signupTicket`**; no password — emails a link that sets it) |
 | `POST` | `/login` | Public | Login → access token in body + **refresh cookie** |
 | `POST` | **`/refresh`** | Cookie | **Rotates the refresh token, issues a new access token.** Called automatically by `api.js` when the 15-min access token expires. |
 | `POST` | **`/forgot-password`** | Public | Emails a reset link. **Always answers identically** whether or not the account exists. |
 | `POST` | **`/reset-password/:token`** | Public | Sets a new password and **revokes every session** on every device. |
 | `POST` | `/google` | Public | Google Sign-In (login only; 404 if no account) |
-| `POST` | **`/google-register`** | Public | **True Google signup** — secret code + verified token → account created, signed in. No password, no verification email. |
+| `POST` | **`/google-register`** | Public | **True Google signup** — **`signupTicket`** + verified token → account created, signed in. No password, no verification email. |
 | `POST` | `/google-profile` | Public | Decodes Google token for signup autofill |
-| `POST` | `/check-secret` | Public | Validates signup secret code |
+| `POST` | `/check-secret` | Public | Exchanges the secret code for a **`signupTicket`** (JWT, `purpose:"signup"`, 15m). The only way to get one. |
 | `GET` | `/check-email` | Public | Checks email availability (**rate-limited** — it is an enumeration oracle) |
 | `GET` | `/check-username` | Public | Checks username availability (**rate-limited**) |
 | `POST` | `/verify-and-set-password/:token` | Public | Verifies email and sets the initial password |
@@ -842,6 +865,17 @@ the running server (incl. real PDF generation); the test invoice was removed and
 *replay, status checked before linking, `authProvider` corrected on link. Removed dead `JWT_EXPIRY` (nothing read*
 *it) and generated a real `REFRESH_TOKEN_SECRET` (it was still the literal placeholder from `.env.example`).*
 *Verified with 26 live checks against the running server. Remaining follow-up: a server-issued nonce for Google.*
+
+*Signup gate: 2026-07-13 — the secret-code gate was a React NUMBER (`step`), so anything that called `setStep(2)`*
+*walked past it — and the Google button on step 1 did exactly that, landing you on the details form having never*
+*entered the secret code. Not an auth bypass (the server re-checked the raw secret at the final request and*
+*returned 403), but you could fill in the entire form before finding out. Replaced with a server-signed SIGNUP*
+*TICKET: the code buys a 15-minute JWT, and `assertSignupAllowed()` is the first line of every account-creating*
+*path. No client state to skip; the raw secret no longer lives in React state; a future signup route inherits the*
+*gate because it must present a ticket. The ticket carries a `purpose:"signup"` claim — WITHOUT it, since*
+*JWT_SECRET signs access tokens too, any logged-in user's access token would pass the signup gate (there is a*
+*test for precisely that). Google also moved to step 2, behind the gate, and its button now reads "Sign up with*
+*Google" rather than "Sign in". 15 live checks.*
 
 *Last Updated: 2026-07-13 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
 *Cleanup pass: 2026-07-10 — removed Firebase remnants, dead scripts, unused packages; added Prettier/ESLint; updated repo structure docs.*

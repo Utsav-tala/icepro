@@ -21,20 +21,19 @@ const sendSession = (res, statusCode, { user, token, refreshToken }, message) =>
 // Identifies the device on the user's session list, so refresh tokens are traceable.
 const deviceOf = (req) => String(req.headers["user-agent"] || "unknown").slice(0, 200);
 
-// ── Check Secret Code ─────────────────────────────────────────────────────────
+// ── Check Secret Code → issue a signup ticket ─────────────────────────────────
 /**
  * @route   POST /api/auth/check-secret
  * @access  Public
- * Validates the signup secret code before showing Step 2 of signup.
+ *
+ * Exchanges the secret code for a short-lived signed SIGNUP TICKET. This is the only
+ * way to obtain one, and no account can be created without one — so the gate lives in a
+ * credential, not in the frontend's `step` variable, which anything could walk past.
  */
 const checkSecret = async (req, res, next) => {
   try {
-    const { secretCode } = req.body;
-    const validSecret    = process.env.SIGNUP_SECRET;
-    if (!secretCode || !validSecret || secretCode !== validSecret) {
-      throw new ApiError(403, "Invalid secret code. Ask your administrator for the signup code.");
-    }
-    res.status(200).json(new ApiResponse(200, { valid: true }, "Secret code accepted"));
+    const result = authService.issueSignupTicket(req.body?.secretCode);
+    res.status(200).json(new ApiResponse(200, result, "Secret code accepted"));
   } catch (error) {
     next(error);
   }

@@ -70,7 +70,9 @@ function LeftPanel() {
 }
 
 // ── Shared: Google GIS button loader ─────────────────────────────────────────
-function useGoogleButton(btnRef, onCredential) {
+// `text` controls the button's wording. It matters: the signup screen used to render
+// "Sign in with Google", which is a different promise from the one it actually kept.
+function useGoogleButton(btnRef, onCredential, text = "signin_with") {
   useEffect(() => {
     if (!process.env.REACT_APP_GOOGLE_CLIENT_ID) return;
     const init = () => {
@@ -81,7 +83,7 @@ function useGoogleButton(btnRef, onCredential) {
       });
       window.google.accounts.id.renderButton(btnRef.current, {
         theme: "outline", size: "large", width: "100%",
-        text: "signin_with", shape: "rectangular", logo_alignment: "left",
+        text, shape: "rectangular", logo_alignment: "left",
       });
     };
     if (window.google) { init(); }
@@ -101,7 +103,7 @@ function useGoogleButton(btnRef, onCredential) {
         }, 200);
       }
     }
-  }, [btnRef, onCredential]);
+  }, [btnRef, onCredential, text]);
 }
 
 // ── Shared: divider ───────────────────────────────────────────────────────────
@@ -126,6 +128,15 @@ export function SignupScreen({ onDone }) {
   // Step 1
   const [secretCode, setSecretCode] = useState("");
 
+  // ── The gate ────────────────────────────────────────────────────────────────
+  // A short-lived, server-signed ticket proving the secret code was entered. The server
+  // will not create an account without it, so the gate is a CREDENTIAL, not a step number.
+  //
+  // The old design gated on `step` alone, and the Google button called setStep(2) directly
+  // — so you could reach this form having never entered the secret code, fill it all in,
+  // and only then be told it was wrong. Now there is nothing to skip: no ticket, no signup.
+  const [signupTicket, setSignupTicket] = useState("");
+
   // Step 2 — form values
   const [form, setForm] = useState({ firstName: "", lastName: "", username: "", email: "", mobile: "" });
   // Step 2 — field-level validation errors
@@ -136,13 +147,16 @@ export function SignupScreen({ onDone }) {
   const [googleLoading, setGoogleLoading] = useState(false);
 
   // Held from the Google button so the account can be created WITH Google on submit,
-  // rather than merely autofilling the form and then making them invent a password.
+  // rather than merely autofilling the form and then making them invent a password anyway.
   // The server rejects a token older than 10 minutes, so this is not a long-lived secret.
   const [googleToken, setGoogleToken] = useState("");
 
   const googleBtnRef = useRef(null);
 
-  // ── Google on signup: autofill now, create the account on submit ─────────
+  // ── Google on signup ────────────────────────────────────────────────────────
+  // Only reachable from step 2, i.e. AFTER the ticket exists. It fills the form and marks
+  // this as a Google signup; the account is created on submit. It no longer moves the user
+  // between steps — moving steps was how it used to bypass the gate.
   const handleGoogleForSignup = useCallback(async (response) => {
     setGoogleLoading(true); setErr("");
     try {
@@ -156,16 +170,15 @@ export function SignupScreen({ onDone }) {
           email:     p.email     || f.email,
         }));
         setGoogleToken(response.credential);
-        if (step === 1) setStep(2);
-        setErr("");
+        setFieldErrs({});
       }
     } catch (e) {
       setErr(e.message || "Could not load Google profile.");
     }
     setGoogleLoading(false);
-  }, [step]);
+  }, []);
 
-  useGoogleButton(googleBtnRef, handleGoogleForSignup);
+  useGoogleButton(googleBtnRef, handleGoogleForSignup, "signup_with");
 
   // Signs the user straight in — Google accounts have no password and skip verification.
   const finishGoogleSignup = (u, token) => {
@@ -180,17 +193,17 @@ export function SignupScreen({ onDone }) {
     });
   };
 
-  // ── Step 1: Validate secret code ─────────────────────────────────────────
+  // ── Step 1: exchange the secret code for a signup ticket ─────────────────
+  // The ticket — not setStep(2) — is what actually unlocks signup. Advancing the step is
+  // now just what the user sees; the server enforces the gate.
   async function doStep1() {
     if (!secretCode.trim()) return setErr("Enter the signup secret code.");
     setLoading(true); setErr("");
     try {
-      // Validate secret code server-side by pre-calling register with partial data
-      // Actually we validate secret on the final register call, but we can do a lightweight
-      // check via a dedicated endpoint or just proceed (validated server-side on submit).
-      // For UX we call the backend to verify the code early.
       const res = await api.post("/auth/check-secret", { secretCode: secretCode.trim() });
-      if (res.success && res.data.valid) {
+      if (res.success && res.data.signupTicket) {
+        setSignupTicket(res.data.signupTicket);
+        setSecretCode("");   // no longer needed — the ticket replaces it
         setStep(2);
       } else {
         setErr("Invalid secret code. Please contact your administrator.");
@@ -233,13 +246,14 @@ export function SignupScreen({ onDone }) {
   // ── Step 2: Validate details & Submit ─────────────────────────────────────
   async function doStep2() {
     setErr("");
-    if (!form.firstName.trim())                      return setErr("Enter your first name.");
+    if (!signupTicket)                                    return setErr("Your signup session expired. Please enter the secret code again.");
+    if (!form.firstName.trim())                           return setErr("Enter your first name.");
     if (!form.username.trim() || form.username.length < 3) return setErr("Username must be at least 3 characters.");
-    if (!/^\S+@\S+\.\S+/.test(form.email))           return setErr("Enter a valid email address.");
-    if (!/^\d{10}$/.test(form.mobile.trim()))         return setErr("Mobile number must be exactly 10 digits.");
-    if (fieldErrs.email)                              return setErr(fieldErrs.email);
-    if (fieldErrs.username)                           return setErr(fieldErrs.username);
-    
+    if (!/^\S+@\S+\.\S+/.test(form.email))                return setErr("Enter a valid email address.");
+    if (!/^\d{10}$/.test(form.mobile.trim()))             return setErr("Mobile number must be exactly 10 digits.");
+    if (fieldErrs.email)                                  return setErr(fieldErrs.email);
+    if (fieldErrs.username)                               return setErr(fieldErrs.username);
+
     setLoading(true); setErr("");
     try {
       // ── Google signup: create the account and sign in, right now ──────────
@@ -247,10 +261,10 @@ export function SignupScreen({ onDone }) {
       // user owns this mailbox, which is the only thing that email was establishing.
       if (googleToken) {
         const res = await api.post("/auth/google-register", {
-          secretCode: secretCode.trim(),
-          idToken:    googleToken,
-          username:   form.username.trim(),
-          mobile:     form.mobile.trim(),
+          signupTicket,
+          idToken:  googleToken,
+          username: form.username.trim(),
+          mobile:   form.mobile.trim(),
         });
         if (res.success) {
           finishGoogleSignup(res.data.user, res.data.token);
@@ -260,27 +274,35 @@ export function SignupScreen({ onDone }) {
 
       // ── Local signup: account is created without a password; the emailed link sets it.
       const res = await api.post("/auth/register", {
-        secretCode: secretCode.trim(),
-        firstName:  form.firstName.trim(),
-        lastName:   form.lastName.trim(),
-        username:   form.username.trim(),
-        email:      form.email.trim(),
-        mobile:     form.mobile.trim(),
+        signupTicket,
+        firstName: form.firstName.trim(),
+        lastName:  form.lastName.trim(),
+        username:  form.username.trim(),
+        email:     form.email.trim(),
+        mobile:    form.mobile.trim(),
       });
       if (res.success) {
         alert(res.message || "Registration successful! Please check your email to verify your account.");
         onDone(null); // Return to sign-in screen
       }
     } catch (e) {
-      // A stale Google token (>10 min old) can't be reused — send them back to the button
-      // instead of showing a cryptic error.
-      if (googleToken && /expired|invalid google/i.test(e.message || "")) {
+      const msg = e.message || "";
+
+      // The 15-minute ticket lapsed while they were filling the form. Send them back to
+      // the gate rather than showing a dead-end error.
+      if (/signup session/i.test(msg)) {
+        setSignupTicket("");
+        setGoogleToken("");
+        setStep(1);
+        setErr("Your signup session expired. Please enter the secret code again.");
+      } else if (googleToken && /expired|invalid google/i.test(msg)) {
+        // A stale Google token (>10 min old) can't be reused — send them back to the button.
         setGoogleToken("");
         setErr("Your Google sign-in expired. Please click the Google button again.");
       } else if (e.errors && Array.isArray(e.errors) && e.errors.length > 0) {
         setErr(e.errors[0].message);
       } else {
-        setErr(e.message || "Registration failed. Please try again.");
+        setErr(msg || "Registration failed. Please try again.");
       }
     }
     setLoading(false);
@@ -339,19 +361,13 @@ export function SignupScreen({ onDone }) {
                 {loading ? "Verifying..." : "Continue →"}
               </button>
 
-              {/* Google autofill option */}
-              {process.env.REACT_APP_GOOGLE_CLIENT_ID && (
-                <>
-                  <Divider />
-                  <div style={{ fontSize: 12, color: C.textLight, textAlign: "center", marginBottom: 10 }}>
-                    Use Google to autofill your name and email (you'll still need the secret code)
-                  </div>
-                  {googleLoading
-                    ? <div style={{ textAlign: "center", padding: "8px 0", color: C.textLight, fontSize: 13 }}>⏳ Loading Google profile...</div>
-                    : <div ref={googleBtnRef} style={{ width: "100%" }} />
-                  }
-                </>
-              )}
+              {/* There is deliberately NO Google button here.
+                  It used to sit on this screen and call setStep(2) directly, which walked
+                  straight past the secret code — you could reach the details form without
+                  ever entering it. Google now lives on step 2, behind the gate. */}
+              <div style={{ fontSize: 11, color: C.textLight, textAlign: "center", marginTop: 14 }}>
+                You can sign up with Google on the next step.
+              </div>
             </div>
           )}
 
@@ -359,12 +375,39 @@ export function SignupScreen({ onDone }) {
           {step === 2 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
+              {/* ── The fork, offered only AFTER the gate ──────────────────────
+                  Google is the fast path: it proves the email, so there is no password to
+                  invent and no inbox round-trip. The form below is the fallback. */}
+              {process.env.REACT_APP_GOOGLE_CLIENT_ID && !googleToken && (
+                <div>
+                  <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 14px", marginBottom: 10, fontSize: 12, color: "#1e40af" }}>
+                    <strong>Fastest way:</strong> sign up with Google. No password to create,
+                    no verification email — you'll be signed in straight away.
+                  </div>
+                  {googleLoading
+                    ? <div style={{ textAlign: "center", padding: "8px 0", color: C.textLight, fontSize: 13 }}>⏳ Connecting to Google...</div>
+                    : <div ref={googleBtnRef} style={{ width: "100%" }} />
+                  }
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0 2px" }}>
+                    <div style={{ flex: 1, height: 1, background: C.border }} />
+                    <span style={{ fontSize: 11, color: C.textLight, fontWeight: 600 }}>or fill in your details</span>
+                    <div style={{ flex: 1, height: 1, background: C.border }} />
+                  </div>
+                </div>
+              )}
+
               {/* Google mode — say plainly what will happen, because it differs a lot
                   from the email route (no password, no inbox trip, signed in at once). */}
               {googleToken && (
-                <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.green }}>
-                  <strong>✓ Connected to Google</strong> — no password needed. Just pick a
-                  username and add your mobile number, and you're in.
+                <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.green, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <div>
+                    <strong>✓ Connected to Google</strong> — no password needed. Pick a username,
+                    add your mobile, and you're in.
+                  </div>
+                  <span style={{ color: C.textMid, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", fontSize: 11, textDecoration: "underline" }}
+                    onClick={() => { setGoogleToken(""); setForm(f => ({ ...f, email: "" })); }}>
+                    Use email instead
+                  </span>
                 </div>
               )}
 
