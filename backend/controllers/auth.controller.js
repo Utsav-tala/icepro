@@ -5,6 +5,21 @@ const authService = require("../services/auth.service");
 const ApiResponse = require("../utils/ApiResponse");
 const ApiError    = require("../utils/ApiError");
 const User        = require("../models/User");
+const { REFRESH_COOKIE, refreshCookieOptions } = require("../utils/tokens");
+
+// ── Session helpers ───────────────────────────────────────────────────────────
+// The refresh token is delivered ONLY as an httpOnly cookie and is never put in the
+// JSON body — page JavaScript must not be able to read it, or an XSS could lift a
+// 7-day session. The short-lived access token goes in the body as before.
+const sendSession = (res, statusCode, { user, token, refreshToken }, message) => {
+  if (refreshToken) {
+    res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  }
+  res.status(statusCode).json(new ApiResponse(statusCode, { user, token }, message));
+};
+
+// Identifies the device on the user's session list, so refresh tokens are traceable.
+const deviceOf = (req) => String(req.headers["user-agent"] || "unknown").slice(0, 200);
 
 // ── Check Secret Code ─────────────────────────────────────────────────────────
 /**
@@ -50,10 +65,76 @@ const register = async (req, res, next) => {
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    const result = await authService.loginUser(email, password);
-    res.status(200).json(
-      new ApiResponse(200, result, "Login successful")
-    );
+    const result = await authService.loginUser(email, password, deviceOf(req));
+    sendSession(res, 200, result, "Login successful");
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ── Refresh the session ───────────────────────────────────────────────────────
+/**
+ * @route   POST /api/auth/refresh
+ * @access  Public (authenticated by the httpOnly refresh cookie)
+ *
+ * The frontend calls this automatically when a 15-minute access token expires
+ * (see api.js). Until this endpoint existed, that call 404'd and every user was
+ * silently signed out mid-work every 15 minutes.
+ *
+ * Rotates the refresh token: the presented one is revoked and a new one issued.
+ */
+const refresh = async (req, res, next) => {
+  try {
+    const result = await authService.refreshSession(req.cookies?.[REFRESH_COOKIE], deviceOf(req));
+    sendSession(res, 200, result, "Session refreshed");
+  } catch (error) {
+    // The cookie is dead — clear it, so the browser stops re-sending a token that will
+    // only fail again. Options must match the ones it was set with or it won't clear.
+    res.clearCookie(REFRESH_COOKIE, { ...refreshCookieOptions(), maxAge: undefined });
+    next(error);
+  }
+};
+
+// ── Forgot password ───────────────────────────────────────────────────────────
+/**
+ * @route   POST /api/auth/forgot-password
+ * @access  Public
+ *
+ * Always answers the same way, whether or not the email exists. Saying "no such
+ * account" would be a free account-enumeration oracle.
+ */
+const forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) throw new ApiError(400, "Email is required");
+
+    await authService.forgotPassword(email);
+
+    res.status(200).json(new ApiResponse(200, null,
+      "If an account exists for that email, a password reset link has been sent."));
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ── Reset password ────────────────────────────────────────────────────────────
+/**
+ * @route   POST /api/auth/reset-password/:token
+ * @access  Public
+ *
+ * Signs the user out of every device — a reset is the standard response to a
+ * suspected compromise, so the attacker's sessions must die too.
+ */
+const resetPassword = async (req, res, next) => {
+  try {
+    const { password } = req.body;
+    await authService.resetPassword(req.params.token, password);
+
+    // Every refresh token was just revoked, so this browser's cookie is dead too.
+    res.clearCookie(REFRESH_COOKIE, { ...refreshCookieOptions(), maxAge: undefined });
+
+    res.status(200).json(new ApiResponse(200, null,
+      "Password reset. You have been signed out everywhere — please sign in with your new password."));
   } catch (error) {
     next(error);
   }
@@ -68,12 +149,27 @@ const login = async (req, res, next) => {
 const googleSignIn = async (req, res, next) => {
   try {
     const { idToken } = req.body;
-    if (!idToken) throw new ApiError(400, "Google ID token is required");
+    const result = await authService.googleSignInOnly(idToken, deviceOf(req));
+    sendSession(res, 200, result, "Google Sign-In successful");
+  } catch (error) {
+    next(error);
+  }
+};
 
-    const result = await authService.googleSignInOnly(idToken);
-    res.status(200).json(
-      new ApiResponse(200, result, "Google Sign-In successful")
-    );
+// ── Google Sign-UP (creates the account, signs them straight in) ──────────────
+/**
+ * @route   POST /api/auth/google-register
+ * @access  Public
+ * Body: { secretCode, idToken, username, mobile }
+ *
+ * A real Google signup: no password to invent and no verification email round-trip.
+ * Google has already proved the user owns the mailbox, which is the only thing the
+ * verification email was establishing.
+ */
+const googleRegister = async (req, res, next) => {
+  try {
+    const result = await authService.registerWithGoogle(req.body, deviceOf(req));
+    sendSession(res, 201, result, "Account created with Google. You're signed in.");
   } catch (error) {
     next(error);
   }
@@ -145,10 +241,9 @@ const checkUsername = async (req, res, next) => {
 const verifyAndSetPassword = async (req, res, next) => {
   try {
     const { password } = req.body;
-    const result = await authService.verifyAndSetPassword(req.params.token, password);
-    res.status(200).json(
-      new ApiResponse(200, result, "Email verified and password set successfully. You are now logged in.")
-    );
+    const result = await authService.verifyAndSetPassword(req.params.token, password, deviceOf(req));
+    sendSession(res, 200, result,
+      "Email verified and password set successfully. You are now logged in.");
   } catch (error) {
     next(error);
   }
@@ -161,7 +256,6 @@ const verifyAndSetPassword = async (req, res, next) => {
  */
 const resendVerification = async (req, res, next) => {
   try {
-    const { protect } = require("../middleware/auth.middleware");
     await authService.resendVerification(req.user._id);
     res.status(200).json(
       new ApiResponse(200, null, "Verification email sent. Please check your inbox.")
@@ -195,8 +289,13 @@ const getMe = async (req, res, next) => {
  */
 const logout = async (req, res, next) => {
   try {
-    // Clear the refresh token cookie
-    res.clearCookie("refreshToken", { path: "/api/auth" });
+    // Actually REVOKE the session, don't just drop the cookie. Deleting the token's hash
+    // from the user is what makes the refresh token dead — previously logout cleared a
+    // cookie that had never been set and invalidated nothing, so a copied token stayed
+    // usable. Only this device is signed out; other devices keep their sessions.
+    await authService.logoutUser(req.cookies?.[REFRESH_COOKIE]);
+
+    res.clearCookie(REFRESH_COOKIE, { ...refreshCookieOptions(), maxAge: undefined });
     res.status(200).json(new ApiResponse(200, null, "Logout successful"));
   } catch (error) {
     next(error);
@@ -206,12 +305,16 @@ const logout = async (req, res, next) => {
 module.exports = {
   checkSecret,
   register,
+  googleRegister,
   login,
+  refresh,
   googleSignIn,
   googleProfile,
   checkEmail,
   checkUsername,
   verifyAndSetPassword,
+  forgotPassword,
+  resetPassword,
   resendVerification,
   getMe,
   logout,

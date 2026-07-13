@@ -2,17 +2,23 @@
 // Business logic for all authentication operations.
 // Handles: local login/register, Google OAuth (login-only), email verification, lockout.
 
+const bcrypt                    = require("bcryptjs");
 const { OAuth2Client }          = require("google-auth-library");
 const User                      = require("../models/User");
 const ApiError                  = require("../utils/ApiError");
-const { sendVerificationEmail } = require("../utils/email");
+const { sendVerificationEmail, sendPasswordResetEmail } = require("../utils/email");
 const {
   createVerificationToken,
   hashToken,
   generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+  hashRefreshToken,
 } = require("../utils/tokens");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+const MIN_PASSWORD_LENGTH = 8;
 
 // ── Shared: build safe user response ─────────────────────────────────────────
 const safeUser = (user) => {
@@ -20,12 +26,46 @@ const safeUser = (user) => {
   delete obj.password;
   delete obj.emailVerificationToken;
   delete obj.emailVerificationExpires;
+  delete obj.passwordResetToken;
+  delete obj.passwordResetExpires;
   delete obj.refreshTokens;
   delete obj.googleId;
   delete obj.failedLoginAttempts;
   delete obj.lockUntil;
   return obj;
 };
+
+// ── Shared: password policy ──────────────────────────────────────────────────
+// One definition, used by every path that sets a password (initial setup and reset),
+// so the rules cannot drift apart between them.
+const assertStrongPassword = (password) => {
+  if (!password || password.length < MIN_PASSWORD_LENGTH) {
+    throw new ApiError(400, `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`, [
+      { field: "password", message: `Use at least ${MIN_PASSWORD_LENGTH} characters.` },
+    ]);
+  }
+  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+    throw new ApiError(400, "Password must contain at least one letter and one number.", [
+      { field: "password", message: "Include at least one letter and one number." },
+    ]);
+  }
+};
+
+// ── Shared: issue a session (access token + rotating refresh token) ──────────
+// The RAW refresh token is returned for the controller to set as an httpOnly cookie.
+// Only its hash is persisted, so a database leak cannot be replayed as a live session.
+const issueSession = async (user, deviceInfo = "") => {
+  const accessToken  = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user._id);
+
+  await user.addRefreshToken(hashRefreshToken(refreshToken), deviceInfo);
+
+  return { accessToken, refreshToken };
+};
+
+// A bcrypt hash of a throwaway value. Comparing against this on the "no such user" path
+// costs the same ~100ms as a real check — see loginUser for why that matters.
+const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
 
 // ── Register (email/password) ─────────────────────────────────────────────────
 const registerUser = async (userData) => {
@@ -82,13 +122,17 @@ const registerUser = async (userData) => {
 };
 
 // ── Login (email/password) ────────────────────────────────────────────────────
-const loginUser = async (email, password) => {
+const loginUser = async (email, password, deviceInfo = "") => {
   // 1. Find user — include password and lockout fields
   const user = await User
     .findOne({ email: email.toLowerCase() })
-    .select("+password +failedLoginAttempts +lockUntil");
+    .select("+password +failedLoginAttempts +lockUntil +refreshTokens");
 
+  // No such user. Burn the same ~100ms a real bcrypt check would cost before answering.
+  // Returning immediately here would make "unknown email" measurably FASTER than "wrong
+  // password", and that timing gap is enough to enumerate which emails have accounts.
   if (!user) {
+    await bcrypt.compare(password || "", DUMMY_HASH);
     throw new ApiError(401, "Invalid email or password");
   }
 
@@ -121,7 +165,7 @@ const loginUser = async (email, password) => {
   if (user.status === "inactive") {
     throw new ApiError(403, "Your account has been deactivated. Please contact an administrator.");
   }
-  
+
   if (!user.isEmailVerified) {
     throw new ApiError(403, "Please verify your email address before logging in.");
   }
@@ -129,18 +173,90 @@ const loginUser = async (email, password) => {
   // 6. Clear failed attempts on success
   await user.clearFailedLogin();
 
-  const accessToken = generateAccessToken(user);
-  return { user: safeUser(user), token: accessToken };
+  const { accessToken, refreshToken } = await issueSession(user, deviceInfo);
+  return { user: safeUser(user), token: accessToken, refreshToken };
 };
 
-// ── Google Sign-In ONLY (no auto-create) ─────────────────────────────────────
-// Used on the Sign In screen — if email is not in DB, returns 404 error.
-const googleSignInOnly = async (idToken) => {
+// ── Refresh the session ───────────────────────────────────────────────────────
+// Called by POST /api/auth/refresh with the httpOnly cookie. Rotates the refresh token:
+// the presented one is revoked and a new one issued, so a stolen refresh token is good
+// for at most a single use.
+const refreshSession = async (rawRefreshToken, deviceInfo = "") => {
+  if (!rawRefreshToken) {
+    throw new ApiError(401, "No refresh token provided. Please log in again.");
+  }
+
+  // 1. The token must be a valid, unexpired JWT.
+  let decoded;
+  try {
+    decoded = verifyRefreshToken(rawRefreshToken);
+  } catch {
+    throw new ApiError(401, "Your session has expired. Please log in again.");
+  }
+
+  // 2. …AND its hash must still be on the user. This is what makes logout and
+  //    revocation real: a cryptographically valid JWT whose hash we have deleted is
+  //    dead. Without this check, "logout" could not actually invalidate anything.
+  const user = await User.findById(decoded._id).select("+refreshTokens");
+  if (!user) throw new ApiError(401, "Your session has expired. Please log in again.");
+
+  const presentedHash = hashRefreshToken(rawRefreshToken);
+  const known = user.refreshTokens.some((t) => t.tokenHash === presentedHash);
+  if (!known) {
+    throw new ApiError(401, "This session has been revoked. Please log in again.");
+  }
+
+  if (user.status === "inactive") {
+    throw new ApiError(403, "Your account has been deactivated. Please contact an administrator.");
+  }
+
+  // 3. Rotate: revoke the presented token, issue a fresh pair.
+  await user.removeRefreshToken(presentedHash);
+  const { accessToken, refreshToken } = await issueSession(user, deviceInfo);
+
+  return { user: safeUser(user), token: accessToken, refreshToken };
+};
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+// Revokes only the presented device's refresh token; other devices stay signed in.
+const logoutUser = async (rawRefreshToken) => {
+  if (!rawRefreshToken) return;
+
+  let decoded;
+  try {
+    decoded = verifyRefreshToken(rawRefreshToken);
+  } catch {
+    return;   // Already expired or junk — nothing to revoke, and logout must never fail.
+  }
+
+  const user = await User.findById(decoded._id).select("+refreshTokens");
+  if (!user) return;
+
+  await user.removeRefreshToken(hashRefreshToken(rawRefreshToken));
+};
+
+// ── Shared: verify a Google ID token ─────────────────────────────────────────
+// One definition for sign-in, sign-up and autofill, so a check added here cannot be
+// missed by one of them.
+//
+// google-auth-library already validates the signature, `iss`, `aud` and `exp`. Two
+// things it does NOT do, and we must:
+//   · email_verified — a Google account can hold an unverified email address
+//   · replay — a Google ID token is valid for about an hour, so one captured from a log
+//     or a proxy could be presented again later. Rejecting tokens older than 10 minutes
+//     cuts that window by ~6x while still leaving enough time to fill in the signup form
+//     (which reuses the same token). A server-issued nonce would close the window
+//     completely and is the stronger fix; noted as a follow-up rather than half-done here.
+const GOOGLE_TOKEN_MAX_AGE_SECONDS = 10 * 60;
+
+const verifyGoogleToken = async (idToken) => {
   if (!process.env.GOOGLE_CLIENT_ID) {
     throw new ApiError(503, "Google Sign-In is not configured on this server.");
   }
+  if (!idToken) {
+    throw new ApiError(400, "Google ID token is required");
+  }
 
-  // 1. Verify the ID token server-side
   let payload;
   try {
     const ticket = await googleClient.verifyIdToken({
@@ -152,68 +268,121 @@ const googleSignInOnly = async (idToken) => {
     throw new ApiError(401, "Invalid Google token. Please try signing in again.");
   }
 
-  const { sub: googleId, email, email_verified } = payload;
-
-  if (!email_verified) {
-    throw new ApiError(401, "Google account email is not verified.");
+  if (!payload?.email || !payload.email_verified) {
+    throw new ApiError(401, "This Google account's email address is not verified.");
   }
 
-  // 2. Look for existing user by googleId OR email — do NOT create
-  let user = await User.findOne({ googleId });
+  const ageSeconds = Math.floor(Date.now() / 1000) - Number(payload.iat || 0);
+  if (ageSeconds > GOOGLE_TOKEN_MAX_AGE_SECONDS) {
+    throw new ApiError(401, "This Google sign-in has expired. Please try again.");
+  }
+
+  return {
+    googleId:  payload.sub,
+    email:     payload.email.toLowerCase(),
+    firstName: payload.given_name  || "",
+    lastName:  payload.family_name || "",
+  };
+};
+
+// ── Google Sign-In ONLY (no auto-create) ─────────────────────────────────────
+// Used on the Sign In screen — if the email is not in the DB, returns 404.
+const googleSignInOnly = async (idToken, deviceInfo = "") => {
+  const { googleId, email } = await verifyGoogleToken(idToken);
+
+  // Look for an existing user by googleId OR email — do NOT create one here.
+  let user = await User.findOne({ googleId }).select("+refreshTokens");
   if (!user) {
-    user = await User.findOne({ email: email.toLowerCase() });
+    user = await User.findOne({ email }).select("+refreshTokens");
   }
 
   if (!user) {
     throw new ApiError(404, "No account found with this Google account. Please sign up first.");
   }
 
-  // 3. Link googleId if not already linked (first time signing in with Google)
-  if (!user.googleId) {
-    user.googleId       = googleId;
-    user.isEmailVerified = true;
-    await user.save();
-  }
-
-  // 4. Check account status
+  // Status is checked BEFORE linking. Previously the googleId was attached and
+  // isEmailVerified flipped to true, and only then was the deactivation checked — so a
+  // disabled account still got mutated by someone who could not sign into it.
   if (user.status === "inactive") {
     throw new ApiError(403, "Your account has been deactivated. Please contact an administrator.");
   }
 
-  const accessToken = generateAccessToken(user);
-  return { user: safeUser(user), token: accessToken };
+  // First Google sign-in on a local account: link the identities. Google has verified
+  // the address, so the email is proven. authProvider is updated too — it used to be
+  // left as "local" forever, which made the field a lie for anyone who linked.
+  if (!user.googleId) {
+    user.googleId        = googleId;
+    user.isEmailVerified = true;
+    if (!user.password) user.authProvider = "google";   // no password → truly a Google account
+    await user.save();
+  }
+
+  const { accessToken, refreshToken } = await issueSession(user, deviceInfo);
+  return { user: safeUser(user), token: accessToken, refreshToken };
+};
+
+// ── Sign UP with Google ───────────────────────────────────────────────────────
+// A real Google signup: the secret code plus a verified Google token is enough to
+// create the account. No password to invent, no verification email round-trip — Google
+// has already proved the user owns the mailbox, which is the only thing that email was
+// establishing. The user lands in the dashboard signed in.
+const registerWithGoogle = async ({ secretCode, idToken, username, mobile }, deviceInfo = "") => {
+  const validSecret = process.env.SIGNUP_SECRET;
+  if (!validSecret || secretCode !== validSecret) {
+    throw new ApiError(403, "Invalid secret code. Ask your administrator for the signup code.");
+  }
+
+  const { googleId, email, firstName, lastName } = await verifyGoogleToken(idToken);
+
+  // Already registered? Send them to sign-in rather than silently creating a duplicate.
+  const existing = await User.findOne({ $or: [{ email }, { googleId }] });
+  if (existing) {
+    throw new ApiError(409, "An account already exists for this Google address. Please sign in instead.", [
+      { field: "email", message: "Already registered — sign in with Google instead." },
+    ]);
+  }
+
+  const cleanUsername = String(username || "").toLowerCase().trim();
+  if (cleanUsername.length < 3) {
+    throw new ApiError(400, "Username must be at least 3 characters.", [
+      { field: "username", message: "Username must be at least 3 characters." },
+    ]);
+  }
+  if (await User.findOne({ username: cleanUsername })) {
+    throw new ApiError(409, "Username is already taken", [
+      { field: "username", message: "This username is already taken. Please choose another." },
+    ]);
+  }
+
+  const cleanMobile = String(mobile || "").trim();
+  if (!/^\d{10}$/.test(cleanMobile)) {
+    throw new ApiError(400, "Mobile number must be exactly 10 digits.", [
+      { field: "mobile", message: "Mobile number must be exactly 10 digits." },
+    ]);
+  }
+
+  const user = await User.create({
+    firstName:       firstName || cleanUsername,
+    lastName,
+    username:        cleanUsername,
+    email,
+    mobile:          cleanMobile,
+    googleId,
+    authProvider:    "google",
+    isEmailVerified: true,     // Google vouched for it — that is what verification was for
+    role:            "manager",
+    // No password. loginUser() detects this and tells them to use Google.
+  });
+
+  const { accessToken, refreshToken } = await issueSession(user, deviceInfo);
+  return { user: safeUser(user), token: accessToken, refreshToken };
 };
 
 // ── Verify Google token — returns profile info for signup autofill ────────────
 // Used on the Sign Up screen to autofill fields. Does NOT create a user.
 const getGoogleProfile = async (idToken) => {
-  if (!process.env.GOOGLE_CLIENT_ID) {
-    throw new ApiError(503, "Google Sign-In is not configured on this server.");
-  }
-
-  let payload;
-  try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    payload = ticket.getPayload();
-  } catch {
-    throw new ApiError(401, "Invalid Google token. Please try again.");
-  }
-
-  const { email, given_name, family_name, email_verified } = payload;
-
-  if (!email_verified) {
-    throw new ApiError(401, "Google account email is not verified.");
-  }
-
-  // Return profile info for frontend autofill only
-  return {
-    email:     email.toLowerCase(),
-    firstName: given_name  || "",
-    lastName:  family_name || "",
-  };
+  const { email, firstName, lastName } = await verifyGoogleToken(idToken);
+  return { email, firstName, lastName };
 };
 
 // ── Check email availability ──────────────────────────────────────────────────
@@ -229,37 +398,99 @@ const checkUsernameAvailable = async (username) => {
 };
 
 // ── Email verification and Password Setup ─────────────────────────────────────
-const verifyAndSetPassword = async (rawToken, password) => {
-  const hashedToken = hashToken(rawToken);
+const verifyAndSetPassword = async (rawToken, password, deviceInfo = "") => {
+  assertStrongPassword(password);
 
   const user = await User
     .findOne({
-      emailVerificationToken:   hashedToken,
+      emailVerificationToken:   hashToken(rawToken),
       emailVerificationExpires: { $gt: Date.now() },
     })
-    .select("+emailVerificationToken +emailVerificationExpires");
+    .select("+emailVerificationToken +emailVerificationExpires +refreshTokens");
 
   if (!user) {
     throw new ApiError(400, "This verification link is invalid or has expired. Please request a new one.");
   }
 
-  if (!password || password.length < 6) {
-    throw new ApiError(400, "Password must be at least 6 characters.");
+  // Status is checked BEFORE the account is mutated — a deactivated user should not be
+  // able to set a password at all, let alone have it saved and then be refused.
+  if (user.status === "inactive") {
+    throw new ApiError(403, "Your account has been deactivated. Please contact an administrator.");
   }
 
   user.isEmailVerified          = true;
   user.emailVerificationToken   = undefined;
   user.emailVerificationExpires = undefined;
-  user.password                 = password; // Will be hashed by pre-save hook
+  user.password                 = password; // hashed by the pre-save hook
   await user.save();
 
-  // Check account status
-  if (user.status === "inactive") {
-    throw new ApiError(403, "Your account has been deactivated. Please contact an administrator.");
+  const { accessToken, refreshToken } = await issueSession(user, deviceInfo);
+  return { user: safeUser(user), token: accessToken, refreshToken };
+};
+
+// ── Forgot password — send a reset link ───────────────────────────────────────
+// ALWAYS resolves successfully, even for an email that has no account. Reporting
+// "no such user" here would hand an attacker a free account-enumeration oracle — the
+// exact hole we just closed on the login path. The caller returns the same neutral
+// "if that email exists, we've sent a link" message either way.
+const forgotPassword = async (email) => {
+  const user = await User
+    .findOne({ email: String(email || "").toLowerCase() })
+    .select("+passwordResetToken +passwordResetExpires");
+
+  if (!user) return;                       // silent no-op, deliberately
+  if (user.status === "inactive") return;  // deactivated accounts cannot be revived this way
+
+  // A Google-only account has no password to reset. Silent, for the same reason.
+  if (user.authProvider === "google" && !user.password) return;
+
+  const { rawToken, hashedToken } = createVerificationToken();
+  user.passwordResetToken   = hashedToken;
+  user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000);   // 1 hour
+  await user.save();
+
+  try {
+    await sendPasswordResetEmail(user, rawToken);
+  } catch (err) {
+    // Do not leak the failure to the caller (it would confirm the account exists),
+    // but do make it loud in the logs so a broken mailer is not invisible.
+    console.error("Password reset email failed:", err.message);
+  }
+};
+
+// ── Reset password using the emailed token ────────────────────────────────────
+const resetPassword = async (rawToken, password) => {
+  assertStrongPassword(password);
+
+  const user = await User
+    .findOne({
+      passwordResetToken:   hashToken(rawToken),
+      passwordResetExpires: { $gt: Date.now() },
+    })
+    .select("+passwordResetToken +passwordResetExpires +refreshTokens");
+
+  if (!user) {
+    throw new ApiError(400, "This reset link is invalid or has expired. Please request a new one.");
   }
 
-  const accessToken = generateAccessToken(user);
-  return { user: safeUser(user), token: accessToken };
+  user.password             = password;      // hashed by the pre-save hook
+  user.passwordResetToken   = undefined;
+  user.passwordResetExpires = undefined;
+
+  // A password reset is the standard response to "my account may be compromised", so it
+  // must kill every existing session — including the attacker's. Also clears any lockout,
+  // since the legitimate owner has just proved control of the mailbox.
+  user.refreshTokens       = [];
+  user.failedLoginAttempts = 0;
+  user.lockUntil           = undefined;
+
+  // Setting a password makes email/password login possible, so the email is now proven
+  // and the account is a local one from here on.
+  user.isEmailVerified = true;
+
+  await user.save();
+
+  return { user: safeUser(user) };
 };
 
 // ── Resend verification email ─────────────────────────────────────────────────
@@ -282,11 +513,16 @@ const resendVerification = async (userId) => {
 
 module.exports = {
   registerUser,
+  registerWithGoogle,
   loginUser,
+  refreshSession,
+  logoutUser,
   googleSignInOnly,
   getGoogleProfile,
   checkEmailAvailable,
   checkUsernameAvailable,
   verifyAndSetPassword,
+  forgotPassword,
+  resetPassword,
   resendVerification,
 };

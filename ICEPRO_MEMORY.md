@@ -219,20 +219,36 @@ User clicks email link → Frontend VerifyEmailScreen
   → Returns JWT, Auto-logs user into Dashboard
 ```
 
-**Login:**
+**Google signup** *(added 2026-07-13)*: secret code + a verified Google ID token creates the account outright —
+`authProvider: "google"`, `isEmailVerified: true`, **no password, no verification email**. Google has already
+proved the user owns the mailbox, which is the only thing that email was establishing.
+
+### Session model — access + rotating refresh  🔑 *(rebuilt 2026-07-13)*
+
 ```
-User submits email+password
-  → POST /api/auth/login
-  → auth.controller → auth.service.loginUser()
-  → Mongoose: findOne({ email }).select("+password")
-  → Blocks if !user.isEmailVerified or user.isLocked
-  → bcrypt.compare(password, hash)
-  → jwt.sign({ _id: userId }, JWT_SECRET, { expiresIn: "7d" })
-  → Response: { token, user }
-  → Frontend: localStorage.setItem("token", token)
-  → api.js interceptor: every request → Authorization: Bearer <token>
-  → protect middleware: jwt.verify(token) → req.user = user
+ACCESS token   15m   Authorization header    stateless, NOT revocable
+REFRESH token   7d   httpOnly cookie         hashed in DB, ROTATED on use, revocable
 ```
+
+**Login / Google / verify-and-set-password** all call `auth.service.issueSession(user, deviceInfo)`:
+the access token goes in the JSON body; the refresh token is set **only** as an httpOnly cookie (page JS — and
+therefore XSS — cannot read it) and only its **SHA-256 hash** is stored on `user.refreshTokens[]`, so a database
+leak cannot be replayed as a live session.
+
+**`POST /api/auth/refresh`** requires *both*: a cryptographically valid JWT **and** a hash still present on the
+user. The second check is what makes revocation real — a perfectly valid JWT whose hash we deleted is dead.
+It then **rotates**: the presented token is revoked and a new one issued, so a stolen refresh token is good for
+at most one use.
+
+> **⚠️ `generateRefreshToken` MUST include a random `jti`.** JWT's `iat` has one-second resolution, so a payload
+> of just `{ _id }` produces **byte-identical tokens** for the same user within the same second. That silently
+> breaks all three guarantees at once: rotation doesn't rotate (new token == old token), logout deletes a hash
+> the "new" token still matches, and a replayed token is indistinguishable from the current one. This was caught
+> by the test suite, not by reading the code.
+
+**Access token lifetime is the blast radius.** It cannot be revoked, so it is deliberately short (15m) and the
+refresh token carries the durability. `JWT_EXPIRY` was removed from `.env` — nothing ever read it
+(`generateAccessToken` reads `ACCESS_TOKEN_EXPIRY`), so setting it did nothing.
 
 ### Email Architecture
 - Centralized via `backend/utils/email.js` using **Nodemailer**.
@@ -335,7 +351,17 @@ Two details worth remembering:
 ## 5. DATA MODELS (MongoDB Collections)
 
 ### `users`
-Fields: `firstName`, `lastName`, `username`, `email`, `password` (hashed, `select:false`), `mobile`, `role` (`owner|manager`, default `manager`), `status` (`active|inactive`), `authProvider` (`local|google`), `googleId`, `isEmailVerified`, `emailVerificationToken`, `emailVerificationExpires`, `failedLoginAttempts`, `lockUntil`
+Fields: `firstName`, `lastName`, `username`, `email`, `password` (hashed, `select:false`), `mobile`, `role` (`owner|manager`, default `manager`), `status` (`active|inactive`), `authProvider` (`local|google`), `googleId`, `isEmailVerified`, `emailVerificationToken`, `emailVerificationExpires`, **`passwordResetToken`**, **`passwordResetExpires`**, **`refreshTokens[]`** (`{tokenHash, deviceInfo, createdAt}`, max 5, `select:false`), `failedLoginAttempts`, `lockUntil`
+
+> **Lockout bug, fixed 2026-07-13.** `incFailedLogin()` never reset `failedLoginAttempts` when a lock expired.
+> After a 15-minute lockout lifted, the counter was **still 5** — so the very next typo took it to 6, tripped the
+> `>= 5` check, and **instantly re-locked the user for another 15 minutes**. One mistake, locked out again. The
+> method now clears an expired lock before incrementing.
+
+> **Password policy** lives in one place: `assertStrongPassword()` in `auth.service.js` (min 8, at least one letter
+> and one digit), used by *both* paths that set a password (initial setup and reset) so they cannot drift.
+> `passwordProblem()` in `frontend/src/components/Auth.js` mirrors it for instant feedback — the server is the
+> authority.
 
 ### `agencies`
 Fields: `name`, `ownerName`, `mobile`, `city`, `address`, `totalShops`, `gstNo`, `status` (`active|inactive`), `notes`
@@ -468,17 +494,36 @@ Singleton document (one per deployment). Fields: `business` (`{ name, address, m
 ### Auth — `/api/auth`
 | Method | Path | Access | Description |
 |---|---|---|---|
-| `POST` | `/register` | Public | Create account (no password, sends email) |
-| `POST` | `/login` | Public | Login, returns JWT |
-| `POST` | `/google` | Public | Google Sign-In (login only) |
+| `POST` | `/register` | Public | Create account (no password; emails a link that sets it) |
+| `POST` | `/login` | Public | Login → access token in body + **refresh cookie** |
+| `POST` | **`/refresh`** | Cookie | **Rotates the refresh token, issues a new access token.** Called automatically by `api.js` when the 15-min access token expires. |
+| `POST` | **`/forgot-password`** | Public | Emails a reset link. **Always answers identically** whether or not the account exists. |
+| `POST` | **`/reset-password/:token`** | Public | Sets a new password and **revokes every session** on every device. |
+| `POST` | `/google` | Public | Google Sign-In (login only; 404 if no account) |
+| `POST` | **`/google-register`** | Public | **True Google signup** — secret code + verified token → account created, signed in. No password, no verification email. |
 | `POST` | `/google-profile` | Public | Decodes Google token for signup autofill |
 | `POST` | `/check-secret` | Public | Validates signup secret code |
-| `GET` | `/check-email` | Public | Checks email availability |
-| `GET` | `/check-username` | Public | Checks username availability |
-| `POST` | `/verify-and-set-password/:token` | Public | Verifies email and sets initial password |
+| `GET` | `/check-email` | Public | Checks email availability (**rate-limited** — it is an enumeration oracle) |
+| `GET` | `/check-username` | Public | Checks username availability (**rate-limited**) |
+| `POST` | `/verify-and-set-password/:token` | Public | Verifies email and sets the initial password |
 | `POST` | `/resend-verification` | Protected | Resends verification email |
-| `POST` | `/logout` | Protected | Logout (client clears token, backend clears cookies) |
+| `POST` | `/logout` | Protected | **Actually revokes** the refresh token (deletes its hash), not just the cookie |
 | `GET` | `/me` | Protected | Get current user profile |
+
+**Rate limiters** (`middleware/rateLimiter.middleware.js`) — the choice of which one matters:
+| Limiter | Cap / 15 min | Counts successes? | Used on |
+|---|---|---|---|
+| `strictLimiter` | 20 | **No** — only failures | `/login`, `/google`, `/google-profile` |
+| `sensitiveLimiter` | 10 | **Yes** | `/register`, `/google-register`, `/forgot-password`, `/reset-password`, `/verify-and-set-password`, `/check-secret` |
+| `lookupLimiter` | 40 | Yes | `/check-email`, `/check-username` |
+| `refreshLimiter` | 60 | Yes | `/refresh` |
+| `globalLimiter` | 200 | Yes | everything |
+
+> **Why `skipSuccessfulRequests: true` on login.** A brute-force attack is made of *failures*, so only failures
+> should consume the budget. The old limiter counted successes too, at 10/15min per **IP** — so a whole office
+> behind one NAT address shared ten sign-ins per quarter hour, and normal use would lock everyone out.
+> On `/forgot-password` the opposite is true: successes **must** count, because an unlimited working endpoint is
+> an email bomb and needs no failed request to spam a real inbox.
 
 ### Agencies — `/api/agencies`
 | Method | Path | Access | Description |
@@ -669,6 +714,7 @@ LOCK_TIME_MINUTES=15
 | 10 | Server-side PDF pipeline (Puppeteer): print-ready invoice + report PDFs, single "Print" button opens PDF in browser viewer (print or save) | ✅ Complete |
 | 11 | **Inventory Module** — `StockMovement` ledger, `onHand`/`committed`/`available` model, `applyBillStock` diff engine, production-shortfall alert, `🧊 Inventory` React page. | ✅ Complete |
 | 12 | **Order-first billing** — a new bill is a `pending` ORDER (editable, stock-reserving, no invoice number, no money) until it is *delivered*. `PATCH` / `deliver` / `cancel` endpoints, optimistic locking via `revision`, and **one open order per agency** enforced by a partial unique index. Pending Orders UI. | ✅ Complete |
+| 13 | **Auth hardening** — `POST /auth/refresh` (rotating httpOnly refresh tokens) fixing the **15-minute forced logout**; real password reset; logout that actually revokes; lockout re-lock bug; user-enumeration holes (timing + unlimited lookup endpoints); true Google signup. | ✅ Complete |
 
 ---
 
@@ -693,7 +739,10 @@ LOCK_TIME_MINUTES=15
   (Step 0 of `backfillProductIds.js`). **Remember this whenever adding a field to an existing collection.**
 - **Orders Feature is Stubbed**: The `Order` model and routes exist but the UI only shows a placeholder. The backend `order.routes.js` exists but `order.controller.js` / `order.service.js` need full implementation. (`Order.items[]` already carries `productId`, so it can drive inventory when built.)
 - **No Admin Panel for Role Management**: Changing a user's role must be done directly in MongoDB Compass or via a one-off Node script. A future `/api/users` admin route should be added.
-- **No Token Refresh**: The refresh token helpers are scaffolded in `utils/tokens.js` but the `/api/auth/refresh` endpoint does not yet exist. JWT access tokens expire in 15 min (or `ACCESS_TOKEN_EXPIRY`). The `api.js` client already implements the silent refresh queue — only the server endpoint is missing.
+- ~~**No Token Refresh**~~ ✅ *fixed 2026-07-13* — see Phase 13. `POST /api/auth/refresh` now exists. Until it
+  did, **every user was silently signed out mid-work every 15 minutes**: the access token expired, `api.js` called
+  `/auth/refresh`, that 404'd, and the client wiped the token and forced a re-login. No refresh token had ever
+  been issued to anyone either — `res.cookie` appeared nowhere in the backend.
 - **Vehicles Page is Placeholder**: `Vehicles.js` renders a UI stub with dummy vehicle data. A `Vehicle` model + routes need to be built.
 - **No Image Upload Yet**: Cloudinary env vars are scaffolded but Multer/Cloudinary integration is not implemented (`config/cloudinary.js` is a no-op).
 - **Firebase migration complete** *(2026-07-10)*: `firebase-admin`, `migrateFirebase.js`, `peek.js/2/3`, and the Firebase service account JSON have been removed. The migration is permanently done.
@@ -773,7 +822,28 @@ agency's open order the moment the agency is picked and offers Edit / Deliver / 
 page gained a Pending Orders section. Verified with 26 service-level checks, then 10 live HTTP checks against
 the running server (incl. real PDF generation); the test invoice was removed and the DB restored via reconcile.*
 
-*Last Updated: 2026-07-12 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
+*Auth hardening: 2026-07-13 — audit of the whole auth surface, then fixed everything it found.*
+*THE BIG ONE: every user was being silently signed out mid-work every 15 minutes. `ACCESS_TOKEN_EXPIRY=15m`, and*
+*when the token expired `api.js` called `POST /api/auth/refresh` — which **did not exist** (404). No refresh token*
+*had ever been issued to anyone either: `res.cookie` appeared nowhere in the backend and `addRefreshToken()` was*
+*never called. The client treated the failed refresh as a dead session, wiped localStorage and forced a re-login.*
+*Now built properly: rotating refresh tokens, httpOnly cookie, SHA-256 hash stored on the user, `/auth/refresh`*
+*requiring BOTH a valid JWT and a live hash — which is what finally makes `logout` revoke anything (it used to*
+*clear a cookie that had never been set). Caught during testing: `generateRefreshToken` produced BYTE-IDENTICAL*
+*tokens within the same second (payload was just `{_id}`, and `iat` is second-resolution), silently defeating*
+*rotation, revocation and replay detection at once — fixed with a random `jti`.*
+*Also: real forgot/reset-password flow (revokes every session, single-use token, neutral response so it cannot be*
+*used to enumerate accounts); the lockout bug where an expired lock kept `failedLoginAttempts` at 5, so one typo*
+*after the lock lifted instantly re-locked you for another 15 minutes; user enumeration via login timing (unknown*
+*email returned instantly, a real one spent ~100ms in bcrypt — now both do) and via unlimited `/check-email` and*
+*`/check-username`; rate limiters split so brute-force (failures) is capped hard while normal successful logins*
+*are not — the old 10/15min-per-IP counted successes, so an office behind one NAT IP would lock itself out.*
+*Google: true signup (`/auth/google-register` — no password, no verification email), token-freshness check against*
+*replay, status checked before linking, `authProvider` corrected on link. Removed dead `JWT_EXPIRY` (nothing read*
+*it) and generated a real `REFRESH_TOKEN_SECRET` (it was still the literal placeholder from `.env.example`).*
+*Verified with 26 live checks against the running server. Remaining follow-up: a server-issued nonce for Google.*
+
+*Last Updated: 2026-07-13 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
 *Cleanup pass: 2026-07-10 — removed Firebase remnants, dead scripts, unused packages; added Prettier/ESLint; updated repo structure docs.*
 *Reports module: 2026-07-10 — added `GET /api/reports` (`$facet` aggregation) + `📊 Reports` analytics page; replaced Bill's standalone `{agencyId}` index with compound `{agencyId, createdAt}`. Also fixed two pre-existing build blockers in the working tree: a trailing comma in root `package.json` and a missing `React` import in `src/index.js`.*
 *Structural pass: 2026-07-10 — moved the root-level React app into `frontend/` (git history preserved via `git mv`); `backend/` was already its own top-level folder and did not move. Consolidated `backend/.gitignore` into one root `.gitignore` (also fixed a latent bug where its blanket `uploads/` rule would have defeated `uploads/.gitkeep`). Added a root convenience `package.json` (scripts only, no new deps) and a root `vercel.json` pointing the build at `frontend/`. Zero component logic, imports, API routes, env var names, or business logic changed.*

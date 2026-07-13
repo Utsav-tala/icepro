@@ -4,22 +4,35 @@ import { useState, useEffect } from "react";
 import api from "./api";
 import { CSS }                  from "./constants";
 import { Logo, Spin }           from "./components/UI";
-import { SigninScreen, SignupScreen, VerifyEmailScreen } from "./components/Auth";
+import {
+  SigninScreen, SignupScreen, VerifyEmailScreen,
+  ForgotPasswordScreen, ResetPasswordScreen,
+} from "./components/Auth";
 import { Dashboard }            from "./components/Dashboard";
 
 export default function App() {
   const [screen, setScreen] = useState("loading");
   const [user,   setUser]   = useState(null);
-  // verifyToken: set when user lands on /verify-email/:token deep-link
+  // Set when the user lands on a /verify-email/:token or /reset-password/:token deep link
   const [verifyToken, setVerifyToken] = useState(null);
+  const [resetToken,  setResetToken]  = useState(null);
 
   useEffect(() => {
-    // ── Handle verify-email deep link ─────────────────────────────────────
     const path = window.location.pathname;
-    const match = path.match(/^\/verify-email\/([a-f0-9]+)$/i);
-    if (match) {
-      setVerifyToken(match[1]);
+
+    // ── Handle verify-email deep link ─────────────────────────────────────
+    const verifyMatch = path.match(/^\/verify-email\/([a-f0-9]+)$/i);
+    if (verifyMatch) {
+      setVerifyToken(verifyMatch[1]);
       setScreen("verify-email");
+      return;
+    }
+
+    // ── Handle reset-password deep link ───────────────────────────────────
+    const resetMatch = path.match(/^\/reset-password\/([a-f0-9]+)$/i);
+    if (resetMatch) {
+      setResetToken(resetMatch[1]);
+      setScreen("reset-password");
       return;
     }
 
@@ -89,8 +102,28 @@ export default function App() {
     />
   );
 
+  if (screen === "reset-password") return (
+    <ResetPasswordScreen
+      token={resetToken}
+      onDone={() => {
+        // The reset revoked every session, so there is nothing to stay signed in to.
+        window.history.replaceState({}, "", "/");
+        localStorage.removeItem("token");
+        setResetToken(null);
+        setUser(null);
+        setScreen("signin");
+      }}
+    />
+  );
+
+  if (screen === "forgot-password") return (
+    <ForgotPasswordScreen onBack={() => setScreen("signin")} />
+  );
+
   if (screen === "signup") return (
     <SignupScreen onDone={(u) => {
+      // A Google signup returns the user and lands straight in the dashboard.
+      // A local signup returns null — the password is set from the emailed link.
       if (u) { setUser(u); setScreen("dashboard"); }
       else setScreen("signin");
     }} />
@@ -100,6 +133,7 @@ export default function App() {
     <SigninScreen
       onLogin={(u) => { setUser(u); setScreen("dashboard"); }}
       onSignup={() => setScreen("signup")}
+      onForgot={() => setScreen("forgot-password")}
     />
   );
 

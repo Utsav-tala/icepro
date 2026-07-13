@@ -151,4 +151,56 @@ const sendVerificationEmail = async (user, rawToken) => {
   }
 };
 
-module.exports = { sendVerificationEmail };
+// ── Send password reset ───────────────────────────────────────────────────────
+/**
+ * @param {Object} user     - Mongoose User document (must have firstName, email)
+ * @param {string} rawToken - The raw (unhashed) reset token — only the hash is in the DB
+ */
+const sendPasswordResetEmail = async (user, rawToken) => {
+  const link = `${FE_URL}/reset-password/${rawToken}`;
+  const body = `
+    <p style="color:#4a2020;font-size:15px;line-height:1.7;">
+      Hi <strong>${user.firstName}</strong>,<br/>
+      We received a request to reset the password on your ICEPRO account.
+      Click below to choose a new one.
+    </p>
+    <div style="text-align:center;margin:28px 0;">
+      <a href="${link}"
+         style="background:linear-gradient(135deg,#9e1015,#c8181e);color:#fff;
+                text-decoration:none;padding:14px 32px;border-radius:10px;
+                font-weight:700;font-size:15px;display:inline-block;
+                box-shadow:0 4px 14px rgba(200,24,30,0.35);">
+        🔑 Reset My Password
+      </a>
+    </div>
+    <p style="color:#a07070;font-size:13px;">
+      This link expires in <strong>1 hour</strong> and can only be used once.
+      If the button doesn't work, copy and paste this URL:<br/>
+      <a href="${link}" style="color:#c8181e;word-break:break-all;">${link}</a>
+    </p>
+    <p style="color:#a07070;font-size:13px;margin-top:18px;">
+      <strong>Didn't request this?</strong> You can safely ignore this email — your password
+      will not change until someone opens the link above. Resetting also signs you out
+      everywhere, so if you are worried, reset it yourself.
+    </p>`;
+
+  const tp   = await getTransporter();
+  const info = await tp.sendMail({
+    from:    FROM,
+    to:      user.email,
+    subject: "Reset your ICEPRO password",
+    html:    htmlWrapper("Reset Your Password", body),
+  });
+
+  const previewUrl = nodemailer.getTestMessageUrl(info);
+  if (previewUrl) {
+    console.log("-----------------------------------------------------");
+    console.log("🔑 Password reset email preview:");
+    console.log("👉 " + previewUrl);
+    console.log("-----------------------------------------------------");
+  } else {
+    console.log(`🔑 Password reset email sent to ${user.email} (messageId: ${info.messageId})`);
+  }
+};
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail };

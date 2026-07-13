@@ -1,12 +1,33 @@
 // backend/utils/tokens.js
-// Generates and hashes tokens for email verification.
-// Also provides JWT helpers for access and refresh tokens.
-// NOTE: generateRefreshToken / verifyRefreshToken / hashRefreshToken are scaffolded
-//       for the planned /api/auth/refresh endpoint (see ICEPRO_MEMORY.md Section 11).
-//       They are exported but not yet wired to any route — this is intentional.
+// Token helpers for email verification, password reset, and the access/refresh pair.
+//
+// ── The session model ────────────────────────────────────────────────────────
+// ACCESS token  — short-lived (15m), sent in the Authorization header, never stored
+//                 server-side. Its brevity is the whole point: a stolen one dies fast.
+// REFRESH token — long-lived (7d), delivered ONLY as an httpOnly cookie so page
+//                 JavaScript (and therefore XSS) cannot read it. A SHA-256 hash of it
+//                 is stored on the user, so a database leak cannot be replayed as a
+//                 session — the same raw/hash split used for verification tokens.
+//
+// Refresh tokens are ROTATED: every use issues a new one and revokes the old. That
+// bounds the damage of a stolen refresh token to a single use.
 
 const crypto = require("crypto");
 const jwt    = require("jsonwebtoken");
+
+// The cookie contract, defined once. Login, refresh and logout must all agree on the
+// name and path or the browser will silently keep sending a cookie logout thought it
+// had cleared — so this is deliberately not duplicated at the call sites.
+const REFRESH_COOKIE = "refreshToken";
+const REFRESH_COOKIE_PATH = "/api/auth";
+
+const refreshCookieOptions = () => ({
+  httpOnly: true,                                   // unreadable from JS → XSS can't steal it
+  secure:   process.env.NODE_ENV === "production",  // HTTPS-only in prod; plain http in local dev
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // "none" for a cross-origin SPA
+  path:     REFRESH_COOKIE_PATH,                    // only ever sent to the auth routes
+  maxAge:   7 * 24 * 60 * 60 * 1000,                // 7 days
+});
 
 // ── Raw + hash pair ───────────────────────────────────────────────────────────
 /**
@@ -43,11 +64,19 @@ const generateAccessToken = (user) =>
 
 /**
  * Generate a long-lived refresh token.
- * Only payload needed is the user _id — everything else is re-loaded from DB.
+ *
+ * `jti` is a random per-issuance id, and it is NOT decoration. Without it the payload is
+ * just { _id } and JWT's `iat` has one-second resolution — so two refresh tokens minted
+ * for the same user within the same second are byte-for-byte IDENTICAL. That silently
+ * breaks all three guarantees this token is supposed to carry:
+ *   · rotation      — the "new" token equals the old one, so nothing is actually rotated
+ *   · revocation    — logout deletes a hash that the new token still matches
+ *   · replay checks — a replayed old token is indistinguishable from the current one
+ * A random jti makes every issuance unique regardless of timing.
  */
 const generateRefreshToken = (userId) =>
   jwt.sign(
-    { _id: userId },
+    { _id: userId, jti: crypto.randomUUID() },
     process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET,
     { expiresIn: process.env.REFRESH_TOKEN_EXPIRY || "7d" }
   );
@@ -72,4 +101,7 @@ module.exports = {
   generateRefreshToken,
   verifyRefreshToken,
   hashRefreshToken,
+  REFRESH_COOKIE,
+  REFRESH_COOKIE_PATH,
+  refreshCookieOptions,
 };

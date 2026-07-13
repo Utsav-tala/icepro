@@ -1,12 +1,27 @@
 // src/components/Auth.js
-// Sign Up (3-step: secret code → details + live checks → password)
-// Sign In (email/password + Google login-only)
-// Verify Email (deep-link screen)
+// Sign Up   (2-step: secret code → details; password is set from the emailed link.
+//            With Google, the account is created outright — no password, no email step.)
+// Sign In   (email/password + Google)
+// Verify Email     (deep-link: /verify-email/:token — sets the initial password)
+// Forgot Password  (request a reset link)
+// Reset Password   (deep-link: /reset-password/:token)
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
 import { CSS } from "../constants";
 import { Lbl } from "./UI";
+
+// ── Password policy ───────────────────────────────────────────────────────────
+// Must stay in step with assertStrongPassword() in backend/services/auth.service.js.
+// The server is the authority — this only exists so the user finds out before a round
+// trip. If the two ever disagree, the server wins and the user sees its message.
+const PASSWORD_HINT = "At least 8 characters, with a letter and a number";
+
+function passwordProblem(password) {
+  if (!password || password.length < 8)                   return "Password must be at least 8 characters.";
+  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) return "Password must contain at least one letter and one number.";
+  return "";
+}
 
 const C = {
   red: "#c8181e", redDark: "#9e1015", yellow: "#f5c518",
@@ -98,9 +113,15 @@ const Divider = () => (
   </div>
 );
 
-// ── SIGN UP — 3-step flow ─────────────────────────────────────────────────────
+// ── SIGN UP — 2 steps: secret code → details ─────────────────────────────────
+// The password is NOT set here. A local signup emails a link and the password is chosen
+// there (/verify-email/:token), which is what proves the mailbox belongs to them.
+//
+// With Google there is nothing to prove — Google has already verified the address — so
+// the account is created outright with no password and no email round-trip, and the user
+// lands straight in the dashboard.
 export function SignupScreen({ onDone }) {
-  const [step, setStep] = useState(1); // 1=secret 2=details 3=password
+  const [step, setStep] = useState(1); // 1 = secret code, 2 = details
 
   // Step 1
   const [secretCode, setSecretCode] = useState("");
@@ -114,9 +135,14 @@ export function SignupScreen({ onDone }) {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
 
+  // Held from the Google button so the account can be created WITH Google on submit,
+  // rather than merely autofilling the form and then making them invent a password.
+  // The server rejects a token older than 10 minutes, so this is not a long-lived secret.
+  const [googleToken, setGoogleToken] = useState("");
+
   const googleBtnRef = useRef(null);
 
-  // ── Google autofill on signup ────────────────────────────────────────────
+  // ── Google on signup: autofill now, create the account on submit ─────────
   const handleGoogleForSignup = useCallback(async (response) => {
     setGoogleLoading(true); setErr("");
     try {
@@ -129,9 +155,9 @@ export function SignupScreen({ onDone }) {
           lastName:  p.lastName  || f.lastName,
           email:     p.email     || f.email,
         }));
-        // If we were on step 1 still, move to step 2 after autofill
+        setGoogleToken(response.credential);
         if (step === 1) setStep(2);
-        setErr("✅ Google profile loaded. Complete the form to create your account.");
+        setErr("");
       }
     } catch (e) {
       setErr(e.message || "Could not load Google profile.");
@@ -140,6 +166,19 @@ export function SignupScreen({ onDone }) {
   }, [step]);
 
   useGoogleButton(googleBtnRef, handleGoogleForSignup);
+
+  // Signs the user straight in — Google accounts have no password and skip verification.
+  const finishGoogleSignup = (u, token) => {
+    localStorage.setItem("token", token);
+    onDone({
+      uid:             u._id,
+      name:            u.firstName ? `${u.firstName} ${u.lastName}`.trim() : u.email,
+      email:           u.email,
+      role:            u.role || "manager",
+      isEmailVerified: u.isEmailVerified,
+      authProvider:    u.authProvider,
+    });
+  };
 
   // ── Step 1: Validate secret code ─────────────────────────────────────────
   async function doStep1() {
@@ -203,6 +242,23 @@ export function SignupScreen({ onDone }) {
     
     setLoading(true); setErr("");
     try {
+      // ── Google signup: create the account and sign in, right now ──────────
+      // No password to invent and no verification email — Google has already proved the
+      // user owns this mailbox, which is the only thing that email was establishing.
+      if (googleToken) {
+        const res = await api.post("/auth/google-register", {
+          secretCode: secretCode.trim(),
+          idToken:    googleToken,
+          username:   form.username.trim(),
+          mobile:     form.mobile.trim(),
+        });
+        if (res.success) {
+          finishGoogleSignup(res.data.user, res.data.token);
+          return;
+        }
+      }
+
+      // ── Local signup: account is created without a password; the emailed link sets it.
       const res = await api.post("/auth/register", {
         secretCode: secretCode.trim(),
         firstName:  form.firstName.trim(),
@@ -216,7 +272,12 @@ export function SignupScreen({ onDone }) {
         onDone(null); // Return to sign-in screen
       }
     } catch (e) {
-      if (e.errors && Array.isArray(e.errors) && e.errors.length > 0) {
+      // A stale Google token (>10 min old) can't be reused — send them back to the button
+      // instead of showing a cryptic error.
+      if (googleToken && /expired|invalid google/i.test(e.message || "")) {
+        setGoogleToken("");
+        setErr("Your Google sign-in expired. Please click the Google button again.");
+      } else if (e.errors && Array.isArray(e.errors) && e.errors.length > 0) {
         setErr(e.errors[0].message);
       } else {
         setErr(e.message || "Registration failed. Please try again.");
@@ -297,6 +358,16 @@ export function SignupScreen({ onDone }) {
           {/* ── STEP 2: Details Form ────────────────────────── */}
           {step === 2 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+              {/* Google mode — say plainly what will happen, because it differs a lot
+                  from the email route (no password, no inbox trip, signed in at once). */}
+              {googleToken && (
+                <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: C.green }}>
+                  <strong>✓ Connected to Google</strong> — no password needed. Just pick a
+                  username and add your mobile number, and you're in.
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 10 }}>
                 <div style={{ flex: 1 }}>
                   <Lbl>First Name *</Lbl>
@@ -321,11 +392,20 @@ export function SignupScreen({ onDone }) {
 
               <div>
                 <Lbl>Email Address *</Lbl>
+                {/* Locked in Google mode: the address is whatever Google verified. Letting it
+                    be edited would mean registering an address nobody has proved they own. */}
                 <input className="inp" type="email" placeholder="your@email.com" value={form.email}
+                  readOnly={!!googleToken}
+                  style={googleToken ? { background: "#f7f7f7", cursor: "not-allowed" } : undefined}
                   onChange={e => { upd("email", e.target.value); setFieldErrs(f => ({ ...f, email: "" })); }}
                   onBlur={checkEmailBlur} />
-                {fieldErrs.email && <div className="field-err">⚠️ {fieldErrs.email}</div>}
-                {!fieldErrs.email && /^\S+@\S+\.\S+/.test(form.email) && <div className="field-ok">✓ Email looks good</div>}
+                {googleToken
+                  ? <div className="field-ok">✓ Verified by Google</div>
+                  : <>
+                      {fieldErrs.email && <div className="field-err">⚠️ {fieldErrs.email}</div>}
+                      {!fieldErrs.email && /^\S+@\S+\.\S+/.test(form.email) && <div className="field-ok">✓ Email looks good</div>}
+                    </>
+                }
               </div>
 
               <div>
@@ -344,7 +424,9 @@ export function SignupScreen({ onDone }) {
                 </button>
                 <button className="btn btn-red" style={{ flex: 2, padding: 12, fontSize: 14, borderRadius: 12 }}
                   onClick={doStep2} disabled={loading}>
-                  {loading ? "Creating Account..." : "Create Account 🎉"}
+                  {loading
+                    ? "Creating Account..."
+                    : googleToken ? "Create Account with Google 🎉" : "Create Account 🎉"}
                 </button>
               </div>
             </div>
@@ -362,7 +444,7 @@ export function SignupScreen({ onDone }) {
 }
 
 // ── SIGN IN ───────────────────────────────────────────────────────────────────
-export function SigninScreen({ onLogin, onSignup }) {
+export function SigninScreen({ onLogin, onSignup, onForgot }) {
   const [email, setEmail]       = useState("");
   const [pass, setPass]         = useState("");
   const [err, setErr]           = useState("");
@@ -449,7 +531,13 @@ export function SigninScreen({ onLogin, onSignup }) {
           </div>
 
           <div style={{ marginBottom: 22 }}>
-            <Lbl>Password</Lbl>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <Lbl>Password</Lbl>
+              <span style={{ fontSize: 12, color: C.red, fontWeight: 700, cursor: "pointer" }}
+                onClick={onForgot}>
+                Forgot password?
+              </span>
+            </div>
             <div style={{ position: "relative" }}>
               <input className="inp" id="signin-password" type={showPass ? "text" : "password"} placeholder="Your password"
                 value={pass} onChange={e => { setPass(e.target.value); setErr(""); }}
@@ -512,9 +600,10 @@ export function VerifyEmailScreen({ token, onDone }) {
   const [message, setMessage]   = useState("");
 
   async function submitPassword() {
-    if (password.length < 6) return setMessage("Password must be at least 6 characters.");
+    const problem = passwordProblem(password);
+    if (problem)              return setMessage(problem);
     if (password !== confirm) return setMessage("Passwords do not match.");
-    
+
     setStatus("loading");
     setMessage("");
     
@@ -571,7 +660,7 @@ export function VerifyEmailScreen({ token, onDone }) {
             <div style={{ marginBottom: 14 }}>
               <Lbl>New Password</Lbl>
               <div style={{ position: "relative" }}>
-                <input className="inp" type={showPass ? "text" : "password"} placeholder="At least 6 characters"
+                <input className="inp" type={showPass ? "text" : "password"} placeholder={PASSWORD_HINT}
                   value={password} onChange={e => { setPassword(e.target.value); setMessage(""); }}
                   style={{ paddingRight: 44 }} />
                 <button onClick={() => setShowPass(s => !s)}
@@ -627,5 +716,174 @@ export function VerifyEmailScreen({ token, onDone }) {
         )}
       </div>
     </div>
+  );
+}
+
+// ── Shared shell for the small standalone auth screens ───────────────────────
+function AuthCard({ children }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg,#fff8f0,#fce7f3)", padding: 24 }}>
+      <style>{CSS}</style>
+      <div style={{ background: "#fff", borderRadius: 20, padding: 40, maxWidth: 460, width: "100%", boxShadow: "0 20px 60px rgba(200,24,30,0.1)" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── FORGOT PASSWORD ───────────────────────────────────────────────────────────
+export function ForgotPasswordScreen({ onBack }) {
+  const [email,   setEmail]   = useState("");
+  const [sent,    setSent]    = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [err,     setErr]     = useState("");
+
+  async function submit() {
+    if (!/^\S+@\S+\.\S+/.test(email.trim())) return setErr("Enter a valid email address.");
+    setLoading(true); setErr("");
+    try {
+      await api.post("/auth/forgot-password", { email: email.trim() });
+      // The server answers identically whether or not the account exists — telling the
+      // user "no such account" would let anyone probe which emails are registered. So the
+      // confirmation below is deliberately neutral.
+      setSent(true);
+    } catch (e) {
+      setErr(e.message || "Something went wrong. Please try again.");
+    }
+    setLoading(false);
+  }
+
+  if (sent) return (
+    <AuthCard>
+      <div style={{ textAlign: "center", padding: "10px 0" }}>
+        <div style={{ fontSize: 56, marginBottom: 16 }}>📬</div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, fontWeight: 800, marginBottom: 10 }}>
+          Check your inbox
+        </div>
+        <div style={{ color: C.textMid, fontSize: 14, lineHeight: 1.6, marginBottom: 24 }}>
+          If an account exists for <strong>{email.trim()}</strong>, we've sent a password
+          reset link to it. The link expires in <strong>1 hour</strong>.
+        </div>
+        <button className="btn btn-red" style={{ width: "100%", padding: 13, borderRadius: 12 }} onClick={onBack}>
+          Back to Sign In
+        </button>
+      </div>
+    </AuthCard>
+  );
+
+  return (
+    <AuthCard>
+      <div style={{ textAlign: "center", marginBottom: 24 }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>🔑</div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, fontWeight: 800 }}>Forgot your password?</div>
+        <div style={{ color: C.textLight, fontSize: 14, marginTop: 6 }}>
+          Enter your email and we'll send you a link to set a new one.
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <Lbl>Email Address</Lbl>
+        <input className="inp" type="email" placeholder="your@email.com" value={email}
+          onChange={e => { setEmail(e.target.value); setErr(""); }}
+          onKeyDown={e => e.key === "Enter" && submit()} />
+      </div>
+
+      {err && <div className="err-box">⚠️ {err}</div>}
+
+      <button className="btn btn-red" style={{ width: "100%", padding: 13, borderRadius: 12, fontSize: 15 }}
+        onClick={submit} disabled={loading}>
+        {loading ? <span className="pulse">Sending...</span> : "Send Reset Link"}
+      </button>
+
+      <div style={{ textAlign: "center", marginTop: 18, fontSize: 13, color: C.textLight }}>
+        Remembered it?{" "}
+        <span style={{ color: C.red, fontWeight: 700, cursor: "pointer" }} onClick={onBack}>Back to Sign In</span>
+      </div>
+    </AuthCard>
+  );
+}
+
+// ── RESET PASSWORD (deep-link: /reset-password/:token) ───────────────────────
+export function ResetPasswordScreen({ token, onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm,  setConfirm]  = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [status,   setStatus]   = useState("idle");   // idle | loading | success | error
+  const [message,  setMessage]  = useState("");
+
+  async function submit() {
+    const problem = passwordProblem(password);
+    if (problem)              return setMessage(problem);
+    if (password !== confirm) return setMessage("Passwords do not match.");
+
+    setStatus("loading"); setMessage("");
+    try {
+      const res = await api.post(`/auth/reset-password/${token}`, { password });
+      setStatus("success");
+      setMessage(res.message || "Password reset successfully.");
+      setTimeout(onDone, 2200);
+    } catch (e) {
+      setStatus("error");
+      setMessage(e.message || "This reset link is invalid or has expired.");
+    }
+  }
+
+  if (status === "success") return (
+    <AuthCard>
+      <div style={{ textAlign: "center", padding: "20px 0" }}>
+        <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.green, fontWeight: 800, marginBottom: 10 }}>
+          Password Reset
+        </div>
+        <div style={{ color: C.textMid, fontSize: 14, lineHeight: 1.6 }}>
+          You've been signed out on every device. Taking you to sign in…
+        </div>
+      </div>
+    </AuthCard>
+  );
+
+  return (
+    <AuthCard>
+      <div style={{ textAlign: "center", marginBottom: 24 }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>🔒</div>
+        <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22, color: C.redDark, fontWeight: 800 }}>Set a new password</div>
+        <div style={{ color: C.textLight, fontSize: 14, marginTop: 6 }}>{PASSWORD_HINT}.</div>
+      </div>
+
+      {status === "error" && (
+        <div style={{ background: "#fef2f2", color: C.redDark, padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 18, textAlign: "center", border: "1px solid #fecaca" }}>
+          ⚠️ {message}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 14 }}>
+        <Lbl>New Password</Lbl>
+        <div style={{ position: "relative" }}>
+          <input className="inp" type={showPass ? "text" : "password"} placeholder={PASSWORD_HINT}
+            value={password} onChange={e => { setPassword(e.target.value); setMessage(""); }}
+            style={{ paddingRight: 44 }} />
+          <button onClick={() => setShowPass(s => !s)}
+            style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 16, color: C.textLight }}>
+            {showPass ? "🙈" : "👁️"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <Lbl>Confirm Password</Lbl>
+        <input className="inp" type={showPass ? "text" : "password"} placeholder="Repeat your password"
+          value={confirm} onChange={e => { setConfirm(e.target.value); setMessage(""); }}
+          onKeyDown={e => e.key === "Enter" && submit()} />
+      </div>
+
+      <button className="btn btn-red" style={{ width: "100%", padding: 13, borderRadius: 12, fontSize: 15 }}
+        onClick={submit} disabled={status === "loading"}>
+        {status === "loading" ? <span className="pulse">Resetting...</span> : "Reset Password"}
+      </button>
+
+      <div style={{ textAlign: "center", marginTop: 18, fontSize: 12, color: C.textLight }}>
+        Resetting your password signs you out everywhere.
+      </div>
+    </AuthCard>
   );
 }

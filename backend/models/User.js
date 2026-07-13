@@ -84,6 +84,19 @@ const userSchema = new mongoose.Schema(
       select: false,
     },
 
+    // ── Password reset ────────────────────────────────────────────────────────
+    // Same raw/hash split as email verification: the RAW token goes in the email,
+    // only its SHA-256 hash is stored. A database leak therefore cannot be used to
+    // reset anyone's password.
+    passwordResetToken: {
+      type:   String,
+      select: false,
+    },
+    passwordResetExpires: {
+      type:   Date,
+      select: false,
+    },
+
     // ── Refresh tokens (per-device, hashed) ───────────────────────────────────
     // Max 5 stored — oldest pruned on overflow
     refreshTokens: {
@@ -159,10 +172,20 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 // ── Instance method: Increment failed login attempts ─────────────────────────
-// Locks account for LOCK_TIME_MINUTES after MAX_LOGIN_ATTEMPTS failures.
+// Locks the account for LOCK_TIME_MINUTES after MAX_LOGIN_ATTEMPTS failures.
 userSchema.methods.incFailedLogin = async function () {
   const MAX_ATTEMPTS  = parseInt(process.env.MAX_LOGIN_ATTEMPTS || "5", 10);
   const LOCK_MINUTES  = parseInt(process.env.LOCK_TIME_MINUTES  || "15", 10);
+
+  // A lock that has already expired must reset the counter, NOT carry it forward.
+  // Without this, a user who was locked out once still has failedLoginAttempts = 5
+  // after the lock lifts — so the very next typo takes them to 6, trips the >= 5 check,
+  // and instantly re-locks them for another 15 minutes. One mistake, locked out again.
+  const lockHasExpired = this.lockUntil && this.lockUntil <= Date.now();
+  if (lockHasExpired) {
+    this.failedLoginAttempts = 0;
+    this.lockUntil           = undefined;
+  }
 
   this.failedLoginAttempts += 1;
 
