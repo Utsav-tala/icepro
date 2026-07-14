@@ -1,8 +1,8 @@
 // src/components/Dashboard.js
 import { useState, useEffect } from "react";
 import api from "../api";
-import { C, ITEM_CATALOG }                    from "../constants";
-import { computeBalance, balanceDisplay, genInvNo, shareWhatsApp } from "../helpers";
+import { C }                                  from "../constants";
+import { computeBalance, balanceDisplay, shareWhatsApp } from "../helpers";
 import { Tag, SC, Logo, PageHeader, PrintBillButton } from "./UI";
 import { AgencyModal }                        from "./AgencyModal";
 import { CreateBillModal }                    from "./BillModal";
@@ -10,7 +10,6 @@ import { PaymentModal }                       from "./PaymentModal";
 import { ProductsPage }                       from "./ProductsPage";
 import { InventoryPage }                      from "./InventoryPage";
 import { ProfilePage }                        from "./ProfilePage";
-import { VehiclesPage }                       from "./Vehicles";
 import { SettingsPage }                       from "./Settings";
 import { ReportsPage }                        from "./ReportsPage";
 
@@ -127,10 +126,7 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
                 <div key={h} style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", textAlign: hi >= 1 ? "right" : "left" }}>{h}</div>
               ))}
             </div>
-            {(b.items || []).map((it, i) => {
-              const gross   = Number(it.qty) * Number(it.rate);
-              const discAmt = it.disc != null && Number(it.disc) > 0 ? gross - Number(it.amount) : 0;
-              return (
+            {(b.items || []).map((it, i) => (
               <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 55px 75px 60px 90px", gap: 8, padding: "8px 14px", borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? "#fff" : "#fffcfc", fontSize: 12, alignItems: "center" }}>
                 <div style={{ fontWeight: 600, color: C.text }}>{it.name}</div>
                 <div style={{ textAlign: "right" }}>{it.qty}</div>
@@ -138,8 +134,7 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
                 <div style={{ textAlign: "right", color: "#065f46", fontWeight: 700 }}>{it.disc != null ? `${Number(it.disc).toFixed(1)}%` : "—"}</div>
                 <div style={{ textAlign: "right", fontWeight: 800, color: C.redDark }}>Rs. {Number(it.amount || 0).toLocaleString()}</div>
               </div>
-            );
-            })}
+            ))}
             <div style={{ padding: "8px 14px", background: "#fef8f8", borderTop: `1px solid ${C.border}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
                 <span style={{ color: C.textLight }}>Current Bill Amount</span>
@@ -288,7 +283,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
   const [selAgency,  setSelAgency]  = useState(null);
   const [agencies,   setAgencies]   = useState([]);
   const [bills,      setBills]      = useState([]);
-  const [orders,     setOrders]     = useState([]);
   const [payments,   setPayments]   = useState([]);
   const [products,   setProducts]   = useState([]);
   const [invSummary, setInvSummary] = useState(null);
@@ -345,7 +339,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
            setAppSettings({ business: s.business, bank: s.bank });
         }
         if (invRes.success) setInvSummary(invRes.data);
-        setOrders([]); // Orders not implemented in backend yet
       } catch (e) {
         console.error("Failed to load dashboard data", e);
       }
@@ -360,7 +353,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
     const bal = computeBalance(a.id, bills, payments);   // excludes pending/cancelled
     return s + Math.max(0, bal);
   }, 0);
-  const pendingOrders = orders.filter(o => o.status === "pending");
 
   // ── Bills split by lifecycle ──────────────────────────────────────────────
   // A `pending` bill is an ORDER: stock is reserved, but no invoice number exists and it
@@ -370,9 +362,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
   const invoicedBills = bills.filter(b => b.status !== "pending" && b.status !== "cancelled");
 
   // ── Order actions ─────────────────────────────────────────────────────────
-  async function approveOrder(o) {}
-  async function rejectOrder(o) {}
-
   // Deliver a pending order — the server burns the invoice number, snapshots the balance,
   // writes the Transaction row, and ships the stock. It becomes immutable at that point.
   async function deliverOrder(b) {
@@ -444,7 +433,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
 
   const nav = [
     { id: "dashboard", icon: "🏠", label: "Home" },
-    { id: "orders",    icon: "📦", label: "Orders",   badge: pendingOrders.length },
     // Badge = undelivered orders. These hold reserved stock and are not yet invoices.
     { id: "billing",   icon: "🧾", label: "Billing",  badge: pendingBills.length },
     { id: "agencies",  icon: "🏢", label: "Agencies" },
@@ -452,7 +440,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
     // Badge = products promised beyond stock on hand. It is the production alert, so it
     // belongs where it is seen without opening anything.
     { id: "inventory", icon: "🧊", label: "Inventory", badge: invSummary?.shortfallCount || 0 },
-    { id: "vehicles",  icon: "🚚", label: "Vehicles" },
     { id: "reports",   icon: "📊", label: "Reports" },
   ];
   if (user?.role === "owner") {
@@ -476,7 +463,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
           agencies={activeAgencies}
           preAgencyId={billMod.preId}
           editOrder={billMod.editOrder}
-          currentUser={user}
           bills={bills}
           payments={payments}
           products={products}
@@ -638,17 +624,17 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
               <>
                 <div className="stat-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 22 }}>
                   <SC label="Total Agencies"    value={activeAgencies.length}             icon="🏢" color={C.redDark} accent={C.red}    sub={`${activeAgencies.length} active`} />
-                  <SC label="Pending Orders"    value={pendingOrders.length}              icon="📦" color="#d97706"  accent={C.yellow} sub="awaiting approval" />
+                  <SC label="Pending Orders"    value={pendingBills.length}               icon="📦" color="#d97706"  accent={C.yellow} sub="awaiting delivery" />
                   <SC label="Total Outstanding" value={`Rs.${totalOut.toLocaleString()}`} icon="⚠️" color={C.red}   accent={C.red}    sub="live calculated" />
                   <SC label="Bills This Month"  value={`Rs.${bills.filter(b => { const d = b.createdAt ? new Date(b.createdAt) : null; return d && d.getMonth() === new Date().getMonth(); }).reduce((s, b) => s + (b.total || 0), 0).toLocaleString()}`} icon="🧾" color="#065f46" accent="#10b981" sub="total billed" />
                 </div>
-                {pendingOrders.length > 0 && (
+                {pendingBills.length > 0 && (
                   <div style={{ background: "#fffbeb", border: `1px solid ${C.yellow}`, borderLeft: `4px solid ${C.yellow}`, borderRadius: 12, padding: "14px 18px", marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div>
-                      <div style={{ fontWeight: 800, color: C.redDark, fontSize: 14 }}>🔔 {pendingOrders.length} New Orders Waiting</div>
-                      <div style={{ fontSize: 12, color: "#92400e", marginTop: 3 }}>{pendingOrders.slice(0, 3).map(o => agencies.find(a => a.id === o.agencyId)?.name || "Agency").join(" · ")}</div>
+                      <div style={{ fontWeight: 800, color: C.redDark, fontSize: 14 }}>🔔 {pendingBills.length} Orders Awaiting Delivery</div>
+                      <div style={{ fontSize: 12, color: "#92400e", marginTop: 3 }}>{pendingBills.slice(0, 3).map(b => b.agencyName || "Agency").join(" · ")}</div>
                     </div>
-                    <button className="btn btn-yellow" style={{ fontSize: 12 }} onClick={() => goPage("orders")}>Review →</button>
+                    <button className="btn btn-yellow" style={{ fontSize: 12 }} onClick={() => goPage("billing")}>Review →</button>
                   </div>
                 )}
                 <div className="mobile-home-cards" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 18 }}>
@@ -708,38 +694,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
                 </div>
               </>
             )}
-          </div>
-        )}
-
-        {/* ════ ORDERS ════ */}
-        {page === "orders" && (
-          <div className="fi">
-            <PageHeader title="Agency Orders 📦" sub={`${pendingOrders.length} pending`} />
-            {orders.length === 0
-              ? <div className="empty-state card"><div className="icon">📦</div><p>No orders yet.</p></div>
-              : orders.map(o => {
-                const ag = agencies.find(a => a.id === o.agencyId);
-                return (
-                  <div key={o.id} className="card" style={{ marginBottom: 14, borderLeft: `4px solid ${o.status === "pending" ? C.yellow : o.status === "approved" ? "#10b981" : "#ef4444"}` }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                      <div>
-                        <Tag cls={`b${o.status === "pending" ? "p" : o.status === "approved" ? "a" : "o"}`}>{o.status}</Tag>
-                        <div style={{ fontWeight: 800, fontSize: 15, color: C.text, marginTop: 6 }}>{ag?.name || o.agencyId}</div>
-                        <div style={{ fontSize: 12, color: C.textLight }}>{o.createdAt ? new Date(o.createdAt).toLocaleString("en-IN") : "Just now"}</div>
-                        {o.notes && <div style={{ fontSize: 12, color: "#7c3aed", marginTop: 4 }}>📝 {o.notes}</div>}
-                      </div>
-                      <div style={{ fontWeight: 800, fontSize: 20, color: C.redDark }}>Rs.{(o.total || 0).toLocaleString()}</div>
-                    </div>
-                    {o.status === "pending" && (
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <button className="btn btn-red" style={{ flex: 1 }} onClick={() => approveOrder(o)}>✓ Approve &amp; Create Bill</button>
-                        <button className="btn btn-ghost" onClick={() => rejectOrder(o)}>✕ Reject</button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            }
           </div>
         )}
 
@@ -1014,7 +968,7 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
           <ProductsPage products={products} currentUser={user} onRefresh={() => setRefresh(r => r + 1)} />
         )}
 
-        {/* ════ VEHICLES ════ */}
+        {/* ════ INVENTORY ════ */}
         {page === "inventory" && (
           <InventoryPage currentUser={user} />
         )}
@@ -1023,8 +977,6 @@ export function Dashboard({ user, onLogout, onUserUpdate }) {
         {page === "profile" && (
           <ProfilePage user={user} onUserUpdate={onUserUpdate} />
         )}
-
-        {page === "vehicles" && <VehiclesPage />}
 
         {/* ════ REPORTS ════ */}
         {page === "reports" && (

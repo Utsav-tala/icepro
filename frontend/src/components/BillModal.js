@@ -22,7 +22,7 @@ const DEFAULT_DISC = 14;
 // pick the agency, and show it with its actions.
 //
 // `editOrder` — pass a pending bill to open this modal in edit mode instead of create mode.
-export function CreateBillModal({ agencies, onClose, onSaved, onEditOrder, preAgencyId, editOrder = null, currentUser, bills = [], payments = [], products = [], appSettings }) {
+export function CreateBillModal({ agencies, onClose, onSaved, onEditOrder, preAgencyId, editOrder = null, bills = [], payments = [], products = [], appSettings }) {
   const [agencyId,   setAgencyId]   = useState(editOrder?.agencyId || preAgencyId || "");
   const [notes,      setNotes]      = useState(editOrder?.notes || "");
   const [lockedItems,setLockedItems]= useState(

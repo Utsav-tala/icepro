@@ -12,12 +12,6 @@ const BILL_TYPES = Object.freeze({
   NON_GST: "nongst",   // INVOICE     — GB/YY-YY/XXXX series
 });
 
-const ORDER_STATUS = Object.freeze({
-  PENDING:  "pending",
-  APPROVED: "approved",
-  REJECTED: "rejected",
-});
-
 const AGENCY_STATUS = Object.freeze({
   ACTIVE:   "active",
   INACTIVE: "inactive",
@@ -116,7 +110,6 @@ module.exports = {
   ROLES,
   BILL_TYPES,
   BILL_STATUS,
-  ORDER_STATUS,
   AGENCY_STATUS,
   TRANSACTION_TYPES,
   INVOICE_PREFIXES,
