@@ -15,6 +15,9 @@
   ],
   "author": "Utsav Tala",
   "license": "ISC",
+  "engines": {
+    "node": ">=20 <21"
+  },
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

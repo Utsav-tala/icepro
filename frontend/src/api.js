@@ -4,8 +4,15 @@
 
 import axios from "axios";
 
+// Backend origin, e.g. "https://icepro-api.onrender.com". Empty in local dev, where the
+// "proxy" field in package.json forwards /api to localhost — but that proxy is a dev-server
+// feature and does NOT exist in a production build, so a deployed frontend must be told
+// where the API actually lives. Trailing slashes are stripped so the value is forgiving.
+const API_ORIGIN = (process.env.REACT_APP_API_URL || "").replace(/\/+$/, "");
+const API_BASE   = `${API_ORIGIN}/api`;
+
 const api = axios.create({
-  baseURL:          "/api",
+  baseURL:          API_BASE,
   withCredentials:  true,   // Required: allows the browser to send httpOnly cookies
 });
 
@@ -65,9 +72,11 @@ api.interceptors.response.use(
       isRefreshing           = true;
 
       try {
-        // The refresh token is sent automatically via the httpOnly cookie
+        // The refresh token is sent automatically via the httpOnly cookie.
+        // Uses raw axios (not `api`) to bypass the interceptor and avoid a retry loop —
+        // so it needs the base URL applied explicitly.
         const refreshRes = await axios.post(
-          "/api/auth/refresh",
+          `${API_BASE}/auth/refresh`,
           {},
           { withCredentials: true }
         );

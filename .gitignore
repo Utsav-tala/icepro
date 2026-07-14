@@ -22,6 +22,12 @@ frontend/build/
 backend/uploads/*
 !backend/uploads/.gitkeep
 
+# Puppeteer's Chrome download (see backend/.puppeteerrc.cjs) — ~200MB, re-fetched on install
+backend/.cache/
+
+# local editor / agent settings
+.claude/
+
 # misc
 .DS_Store
 npm-debug.log*
