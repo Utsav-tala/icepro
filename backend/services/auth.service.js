@@ -152,15 +152,25 @@ const registerUser = async (userData) => {
     role:                     "manager",
   });
 
-  // 5. Send verification email
+  // 5. Send verification email.
+  // The account is already created, so a failure here must NOT roll the signup back — but it
+  // must not be swallowed either. Previously this returned plain success, so the UI told the
+  // user to check an inbox that would never receive anything, and the only trace was a server
+  // log nobody reads. Report the outcome instead and let the caller say something true.
+  let emailSent  = false;
+  let emailError = null;
   try {
     await sendVerificationEmail(user, rawToken);
-  } catch (emailErr) {
-    console.error("Verification email failed:", emailErr.message);
+    emailSent = true;
+  } catch (err) {
+    // Log the whole error, not just .message — SMTP failures carry the useful part in
+    // err.code / err.response ("535 auth failed", "ETIMEDOUT", "ECONNREFUSED"...).
+    emailError = err.response || err.code || err.message;
+    console.error("Verification email FAILED for", user.email, "->", emailError, err);
   }
 
   // 6. Return success (no token, force login after verification)
-  return { user: safeUser(user) };
+  return { user: safeUser(user), emailSent, emailError };
 };
 
 // ── Login (email/password) ────────────────────────────────────────────────────

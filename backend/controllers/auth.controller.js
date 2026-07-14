@@ -48,9 +48,15 @@ const checkSecret = async (req, res, next) => {
 const register = async (req, res, next) => {
   try {
     const result = await authService.registerUser(req.body);
-    res.status(201).json(
-      new ApiResponse(201, result, "Registration successful. Please check your email to verify your account.")
-    );
+
+    // The account exists either way, so this is still a 201 — but do not tell someone to
+    // check their email when we know the send failed. They would wait forever for it.
+    const message = result.emailSent
+      ? "Registration successful. Please check your email to verify your account."
+      : "Account created, but the verification email could not be sent. Ask an owner to " +
+        "resend it, or try 'Forgot password' once email delivery is working.";
+
+    res.status(201).json(new ApiResponse(201, result, message));
   } catch (error) {
     next(error);
   }

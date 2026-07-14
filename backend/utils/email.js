@@ -14,6 +14,17 @@ const FROM   = process.env.EMAIL_USER
   ? `"Vrundavan Ice Cream" <${process.env.EMAIL_USER}>`
   : "ICEPRO ERP <noreply@example.com>";
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// Fail fast instead of hanging. Cloud hosts frequently block or blackhole outbound SMTP
+// ports, and nodemailer's defaults will sit on a dead socket for minutes. A signup that
+// hangs is worse than one that reports a clear failure, so cap every stage.
+const SMTP_TIMEOUTS = {
+  connectionTimeout: 10000,   // TCP connect
+  greetingTimeout:   10000,   // server banner
+  socketTimeout:     20000,   // inactivity mid-conversation
+};
+
 // ── Transporter factory (lazy, singleton) ─────────────────────────────────────
 let _transporter = null;
 
@@ -36,6 +47,7 @@ async function getTransporter() {
         clientSecret: process.env.CLIENT_SECRET,
         refreshToken: process.env.REFRESH_TOKEN,
       },
+      ...SMTP_TIMEOUTS,
     });
     console.log("📧 Email: using Gmail OAuth2");
     return _transporter;
@@ -49,12 +61,22 @@ async function getTransporter() {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
       },
+      ...SMTP_TIMEOUTS,
     });
     console.log("📧 Email: using Gmail + App Password");
     return _transporter;
   }
 
-  // Option 3: Ethereal sandbox (free, no setup)
+  // Option 3: Ethereal sandbox — a FAKE inbox. It accepts mail and delivers nothing.
+  // That is fine locally and catastrophic in production: every user would be told to
+  // check an email that was never sent. Refuse rather than lie about it.
+  if (IS_PROD) {
+    throw new Error(
+      "Email is not configured (EMAIL_USER/EMAIL_PASS are unset). Refusing to fall back " +
+      "to the Ethereal sandbox in production — it delivers nothing."
+    );
+  }
+
   const testAccount = await nodemailer.createTestAccount();
   _transporter = nodemailer.createTransport({
     host:   "smtp.ethereal.email",
@@ -64,6 +86,7 @@ async function getTransporter() {
       user: testAccount.user,
       pass: testAccount.pass,
     },
+    ...SMTP_TIMEOUTS,
   });
   console.log("📧 Email: using Ethereal sandbox (no real email will be delivered)");
   return _transporter;
