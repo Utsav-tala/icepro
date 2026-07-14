@@ -2,9 +2,11 @@
 // Business logic for all authentication operations.
 // Handles: local login/register, Google OAuth (login-only), email verification, lockout.
 
+const crypto                    = require("crypto");
 const bcrypt                    = require("bcryptjs");
 const { OAuth2Client }          = require("google-auth-library");
 const User                      = require("../models/User");
+const Settings                  = require("../models/Settings");
 const ApiError                  = require("../utils/ApiError");
 const { sendVerificationEmail, sendPasswordResetEmail } = require("../utils/email");
 const {
@@ -69,11 +71,29 @@ const issueSession = async (user, deviceInfo = "") => {
 // costs the same ~100ms as a real check — see loginUser for why that matters.
 const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
 
+// Constant-time string compare. A plain `a !== b` bails at the first differing byte, so
+// how long it takes leaks how much of the prefix was right — enough, with enough attempts,
+// to recover a secret character by character. Hash both sides first so the lengths always
+// match (timingSafeEqual throws on a length mismatch, which would itself leak the length).
+const timingSafeEquals = (a, b) => {
+  const ha = crypto.createHash("sha256").update(String(a)).digest();
+  const hb = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+};
+
 // ── The signup gate ───────────────────────────────────────────────────────────
 // Exchange the secret code for a short-lived ticket. This is the ONLY way to get one.
-const issueSignupTicket = (secretCode) => {
-  const validSecret = process.env.SIGNUP_SECRET;
-  if (!validSecret || !secretCode || secretCode !== validSecret) {
+//
+// The code comes from the DATABASE (Settings.signup.secretCode), not from .env, so the
+// owner can rotate it from the Settings page and have it take effect immediately.
+// SIGNUP_SECRET now only bootstraps the DB value on first run — see Settings.getSettings().
+// Previously this read process.env directly while the Settings UI wrote to Mongo, so
+// changing the code did nothing at all: the old .env value kept working.
+const issueSignupTicket = async (secretCode) => {
+  const settings    = await Settings.getSettings();
+  const validSecret = settings.signup?.secretCode;
+
+  if (!validSecret || !secretCode || !timingSafeEquals(String(secretCode), validSecret)) {
     throw new ApiError(403, "Invalid secret code. Ask your administrator for the signup code.");
   }
   return { valid: true, signupTicket: createSignupTicket() };
@@ -535,6 +555,7 @@ const resendVerification = async (userId) => {
 };
 
 module.exports = {
+  issueSession,          // also used by user.service's password change, to re-issue this device
   issueSignupTicket,
   registerUser,
   registerWithGoogle,

@@ -18,6 +18,7 @@ const pdfService = require("../services/pdf.service");
 
 // ── Route imports ─────────────────────────────────────────────────────────────
 const authRoutes      = require("../routes/auth.routes");
+const userRoutes      = require("../routes/user.routes");
 const productRoutes   = require("../routes/product.routes");
 const agencyRoutes    = require("../routes/agency.routes");
 const billRoutes      = require("../routes/bill.routes");
@@ -56,6 +57,7 @@ app.use(globalLimiter);                        // 7. Global rate limiter (200 re
 
 // ── Route mounting ────────────────────────────────────────────────────────────
 app.use("/api/auth",      authRoutes);
+app.use("/api/users",     userRoutes);
 app.use("/api/products",  productRoutes);
 app.use("/api/agencies",  agencyRoutes);
 app.use("/api/bills",     billRoutes);

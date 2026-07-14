@@ -10,6 +10,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
 import { CSS } from "../constants";
 import { Lbl } from "./UI";
+import { mapUser } from "../helpers";
 
 // ── Password policy ───────────────────────────────────────────────────────────
 // Must stay in step with assertStrongPassword() in backend/services/auth.service.js.
@@ -183,14 +184,7 @@ export function SignupScreen({ onDone }) {
   // Signs the user straight in — Google accounts have no password and skip verification.
   const finishGoogleSignup = (u, token) => {
     localStorage.setItem("token", token);
-    onDone({
-      uid:             u._id,
-      name:            u.firstName ? `${u.firstName} ${u.lastName}`.trim() : u.email,
-      email:           u.email,
-      role:            u.role || "manager",
-      isEmailVerified: u.isEmailVerified,
-      authProvider:    u.authProvider,
-    });
+    onDone(mapUser(u));
   };
 
   // ── Step 1: exchange the secret code for a signup ticket ─────────────────
@@ -506,14 +500,7 @@ export function SigninScreen({ onLogin, onSignup, onForgot }) {
       if (res.success) {
         localStorage.setItem("token", res.data.token);
         const u = res.data.user;
-        onLogin({
-          uid:             u._id,
-          name:            u.firstName ? `${u.firstName} ${u.lastName}`.trim() : u.email,
-          email:           u.email,
-          role:            u.role || "manager",
-          isEmailVerified: u.isEmailVerified,
-          authProvider:    u.authProvider,
-        });
+        onLogin(mapUser(u));
       }
     } catch (e) {
       if (e.status === 404 || (e.message && e.message.toLowerCase().includes("no account"))) {
@@ -536,14 +523,7 @@ export function SigninScreen({ onLogin, onSignup, onForgot }) {
       if (res.success) {
         localStorage.setItem("token", res.data.token);
         const u = res.data.user;
-        onLogin({
-          uid:             u._id,
-          name:            u.firstName ? `${u.firstName} ${u.lastName}`.trim() : u.email,
-          email:           u.email,
-          role:            u.role || "manager",
-          isEmailVerified: u.isEmailVerified,
-          authProvider:    u.authProvider,
-        });
+        onLogin(mapUser(u));
       }
     } catch (e) {
       if (e.errors && Array.isArray(e.errors) && e.errors.length > 0) {
@@ -662,13 +642,7 @@ export function VerifyEmailScreen({ token, onDone }) {
         
         // Give them a moment to see the success message
         setTimeout(() => {
-          onDone({
-            uid:             u._id,
-            name:            `${u.firstName} ${u.lastName}`.trim(),
-            email:           u.email,
-            role:            u.role,
-            isEmailVerified: u.isEmailVerified,
-          });
+          onDone(mapUser(u));
         }, 1500);
       } else {
         setStatus("error");

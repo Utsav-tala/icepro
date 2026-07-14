@@ -15,9 +15,15 @@ const validate = (req, res, next) => {
 };
 
 const updateSettingsValidation = [
+  // The signup secret code is now LIVE — it is the real gate for creating accounts
+  // (auth.service reads it from the DB, not from .env). So it gets a real minimum. An
+  // empty one would be worse than weak: Settings.getSettings() would re-bootstrap the
+  // old .env value on the next read, silently un-doing the owner's rotation.
   body("signup.secretCode")
     .optional()
-    .trim(),
+    .trim()
+    .isLength({ min: 8 }).withMessage("Secret code must be at least 8 characters")
+    .isLength({ max: 64 }).withMessage("Secret code must be at most 64 characters"),
 
   body("business.companyName")
     .optional()

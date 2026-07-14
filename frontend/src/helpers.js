@@ -26,6 +26,27 @@ export function getCurrentFY() {
 }
 
 // ── Balance helpers ───────────────────────────────────────────────────────────
+// ── The app's user object ─────────────────────────────────────────────────────
+// One shared mapper from the API's user document to the shape the UI uses. It existed in
+// three places (App.js checkAuth, and both login handlers in Auth.js), each carrying a
+// slightly different subset — so anything that needed a field one of them omitted, like
+// the profile page needing `username` or `mobile`, silently got undefined.
+export function mapUser(u) {
+  if (!u) return null;
+  return {
+    uid:             u._id,
+    firstName:       u.firstName || "",
+    lastName:        u.lastName  || "",
+    username:        u.username  || "",
+    mobile:          u.mobile    || "",
+    name:            u.firstName ? `${u.firstName} ${u.lastName || ""}`.trim() : (u.username || u.email),
+    email:           u.email,
+    role:            u.role || "manager",
+    isEmailVerified: u.isEmailVerified,
+    authProvider:    u.authProvider,
+  };
+}
+
 // Which bills count as real money. Mirrors balanceBearingBills() in the backend's
 // constants/index.js — the two MUST agree, or the balance shown here will disagree with
 // the prevBalance the server snapshots onto the invoice.

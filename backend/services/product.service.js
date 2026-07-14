@@ -90,12 +90,12 @@ const deleteProduct = async (id) => {
 
 // ── Seed products from catalog (one-time) ─────────────────────────────────────
 // Checks the appConfig.productsSeedDone flag — refuses if already seeded.
-// Use reseedProducts() to force-reseed.
+// There is deliberately no reseed counterpart — see routes/product.routes.js.
 const seedProducts = async (catalog, seededBy = "System") => {
   const settings = await Settings.getSettings();
 
   if (settings.appConfig.productsSeedDone) {
-    throw new ApiError(409, "Products have already been seeded. Use the reseed endpoint to replace them.");
+    throw new ApiError(409, "Products have already been seeded. Edit products individually instead — bulk-replacing them would orphan the stock ledger.");
   }
 
   const ops = catalog.map((item) => ({
@@ -123,39 +123,6 @@ const seedProducts = async (catalog, seededBy = "System") => {
   return { insertedCount: result.insertedCount };
 };
 
-// ── Reseed products (destructive — delete all and re-insert from catalog) ─────
-const reseedProducts = async (catalog, reseededBy = "Owner") => {
-  // 1. Delete all existing products
-  await Product.deleteMany({});
-
-  // 2. Bulk insert fresh catalog
-  const ops = catalog.map((item) => ({
-    insertOne: {
-      document: {
-        name:        item.name,
-        rate:        item.rate,
-        rateGst:     item.rateGst !== undefined ? item.rateGst : item.rate,
-        discount:    item.discount !== undefined ? item.discount : 14,
-        unitsPerBox: item.unitsPerBox !== undefined ? item.unitsPerBox : 0,
-        isActive:    true,
-      },
-    },
-  }));
-
-  const result = await Product.bulkWrite(ops, { ordered: false });
-
-  // 3. Update settings flags
-  const settings = await Settings.getSettings();
-  settings.appConfig.productsSeedDone  = true;
-  settings.appConfig.cleanedDuplicates = true;
-  settings.appConfig.reseededAt        = new Date();
-  settings.appConfig.reseededBy        = reseededBy;
-  settings.updatedBy                   = reseededBy;
-  await settings.save();
-
-  return { insertedCount: result.insertedCount };
-};
-
 module.exports = {
   getProducts,
   getProductById,
@@ -163,5 +130,4 @@ module.exports = {
   updateProduct,
   deleteProduct,
   seedProducts,
-  reseedProducts,
 };

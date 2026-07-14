@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import api from "./api";
 import { CSS }                  from "./constants";
+import { mapUser }              from "./helpers";
 import { Logo, Spin }           from "./components/UI";
 import {
   SigninScreen, SignupScreen, VerifyEmailScreen,
@@ -53,15 +54,7 @@ export default function App() {
       try {
         const res = await api.get("/auth/me");
         if (res.success) {
-          const u = res.data.user;
-          setUser({
-            uid:             u._id,
-            name:            u.firstName ? `${u.firstName} ${u.lastName}`.trim() : u.username || u.email,
-            email:           u.email,
-            role:            u.role || "manager",
-            isEmailVerified: u.isEmailVerified,
-            authProvider:    u.authProvider,
-          });
+          setUser(mapUser(res.data.user));
           setScreen("dashboard");
         } else {
           localStorage.removeItem("token");

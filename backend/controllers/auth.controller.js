@@ -32,7 +32,7 @@ const deviceOf = (req) => String(req.headers["user-agent"] || "unknown").slice(0
  */
 const checkSecret = async (req, res, next) => {
   try {
-    const result = authService.issueSignupTicket(req.body?.secretCode);
+    const result = await authService.issueSignupTicket(req.body?.secretCode);
     res.status(200).json(new ApiResponse(200, result, "Secret code accepted"));
   } catch (error) {
     next(error);

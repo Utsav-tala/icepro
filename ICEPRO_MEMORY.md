@@ -108,7 +108,8 @@ icepro-new_version/                (repo root)
 │           ├── PaymentModal.js   ← Record payment modal
 │           ├── ProductsPage.js   ← Products CRUD page
 │           ├── InventoryPage.js  ← 🧊 Stock levels, production-shortfall alert, movement ledger
-│           ├── Settings.js       ← Business & bank settings page (owner only)
+│           ├── ProfilePage.js    ← 👤 My Profile — name, mobile, change password (ALL roles)
+│           ├── Settings.js       ← Business & bank settings; signup code (owner only)
 │           ├── Vehicles.js       ← ⚠️ UI placeholder — dummy data, no API yet
 │           ├── ReportsPage.js    ← 📊 Analytics dashboard (KPIs + breakdown tables + print)
 │           └── UI.js             ← Shared UI components (Logo, Tag, SC, etc.)
@@ -144,6 +145,7 @@ icepro-new_version/                (repo root)
     │   ├── bill.routes.js
     │   ├── payment.routes.js
     │   ├── product.routes.js
+    │   ├── user.routes.js      ← 👤 Self-service profile (/api/users/me) — no :id, ever
     │   ├── inventory.routes.js ← 📦 Stock, shortfalls, movement ledger, reconcile
     │   ├── order.routes.js    ← ⚠️ Stub — health-check only, no controller yet
     │   ├── dashboard.routes.js
@@ -162,6 +164,7 @@ icepro-new_version/                (repo root)
     ├── services/              ← Business logic layer
     │   ├── auth.service.js
     │   ├── agency.service.js
+    │   ├── user.service.js    ← 👤 Own profile + own password (ignores username/email/role)
     │   ├── inventory.service.js ← 📦 applyBillStock diff engine + manual movements + reconcile
     │   ├── bill.service.js    ← Atomic bill creation (Mongoose session/transaction) + stock hook
     │   ├── payment.service.js ← Atomic payment creation (Mongoose session)
@@ -507,8 +510,52 @@ Fields: `productId`, `productName`, `type` (`opening|production|sale|return|dama
 ### `counters`
 Fields: `type` (`gst|nongst`), `fiscalYear` (`25-26`), `seq` (auto-increments). Compound unique index on `{type, fiscalYear}`.
 
+### Users — `/api/users`  👤 *(added 2026-07-13)*
+Self-service only. The id **always** comes from `req.user`, never from the URL — there is no `:id` to swap.
+| Method | Path | Access | Description |
+|---|---|---|---|
+| `GET` | `/me` | Private | My profile |
+| `PATCH` | `/me` | Private | Update **firstName, lastName, mobile**. Everything else is ignored. |
+| `POST` | `/me/password` | Private | Change password. Requires `currentPassword` — *unless* it's a Google account adding its first one. Revokes **all other sessions**, then re-issues one for THIS device so the user isn't kicked out of the page they're on. |
+
+> **`PATCH /me` deliberately ignores `username`, `email`, `role` and `status`.** Not merely unvalidated —
+> the service never reads them, so posting `role: "owner"` changes nothing. There's a test that fires exactly
+> that payload and asserts the role stays `manager`.
+> - `username` — a handle colleagues already know you by; changing it rewrites history from their point of view.
+> - `email` — the account's proof of ownership and the password-reset destination. Changing it needs re-verification.
+
 ### `settings`
-Singleton document (one per deployment). Fields: `business` (`{ name, address, mobile, email, gstNo, panNo, fssaiNo, logo }`), `bank` (`{ accountName, accountNo, ifscCode, bankName, branch }`), `updatedBy`, `updatedAt`
+Singleton document (one per deployment) — always via `Settings.getSettings()`.
+Fields: `signup` (`{ secretCode }`), `business` (`{ companyName, address, phone, gstin }`),
+`bank` (`{ bankName, accountNo, ifsc }`), `appConfig`, `updatedBy`, `updatedAt`
+
+> **🔐 `signup.secretCode` is the LIVE signup gate** *(fixed 2026-07-13)*. `auth.service` reads it **from the
+> database**; `SIGNUP_SECRET` in `.env` now only **bootstraps** it on first run (see `Settings.getSettings()`),
+> so the owner can rotate it from the Settings page and it takes effect immediately.
+>
+> **The bug:** this field existed and the Settings UI wrote to it, but `auth.service` read `process.env.SIGNUP_SECRET`
+> and ignored the DB entirely. **Changing the code in the UI did nothing** — the old `.env` value kept working and the
+> new one never did. An owner who "rotated" a leaked code hadn't. This was live: the DB said `VRUNDAVAN2026` while
+> `.env` said `vrundavan2024`, and `vrundavan2024` was the one that actually worked.
+>
+> Compared with `crypto.timingSafeEqual` (over SHA-256 of both sides, so lengths always match), because `a !== b`
+> bails at the first differing byte and leaks how much of the prefix was right.
+
+> **⚠️ `GET /api/settings` must STRIP `signup` for non-owners.** The route is `protect` only — *every* logged-in user
+> can call it, and `Dashboard.js` fetches it on load for all of them (they need business + bank to print invoices).
+> It used to return the whole document, so **the plaintext signup code was sitting in every manager's browser**.
+> Business and bank details are genuinely needed by everyone; the secret code is not.
+
+> **Response shape is `data.settings.business`, NOT `data.business`.** Both `Settings.js` and `Dashboard.js` read the
+> wrong level, so nothing loaded: the Settings page rendered blank, and pressing **Save All** PUT those blanks back,
+> **wiping the company and bank details**. It also meant WhatsApp invoices went out with no company name.
+> (Server-rendered PDFs were unaffected — `pdf.service` loads Settings itself.)
+
+> **🚫 There is no product re-seed, on purpose.** `POST /products/reseed` called `Product.deleteMany({})` — a hard
+> delete. Since inventory shipped, products are referenced by ObjectId from `StockMovement.productId` and
+> `Bill.items[].productId`, so re-seeding would orphan the **entire stock ledger and every historical bill line**,
+> and `applyBillStock()` would start throwing 409s. Route, controller and service are all deleted. To retire a
+> product, soft-delete it (`DELETE /products/:id` → `isActive: false`).
 
 ---
 
@@ -642,6 +689,9 @@ Three roles are enforced via the `requireRole()` middleware:
 | Create bills | ❌ | ✅ | ✅ |
 | Record payments | ❌ | ✅ | ✅ |
 | Create/Edit products | ❌ | ✅ | ✅ |
+| Edit own profile / change own password (`/api/users/me`) | ✅ | ✅ | ✅ |
+| View business + bank settings (needed to print invoices) | ✅ | ✅ | ✅ |
+| **View / change the signup secret code** | ❌ | ❌ | ✅ |
 | View inventory / shortfalls / ledger | ✅ | ✅ | ✅ |
 | Record stock movements (production, damage, return, adjustment) | ❌ | ✅ | ✅ |
 | Deactivate agencies | ❌ | ❌ | ✅ |
@@ -737,7 +787,8 @@ LOCK_TIME_MINUTES=15
 | 10 | Server-side PDF pipeline (Puppeteer): print-ready invoice + report PDFs, single "Print" button opens PDF in browser viewer (print or save) | ✅ Complete |
 | 11 | **Inventory Module** — `StockMovement` ledger, `onHand`/`committed`/`available` model, `applyBillStock` diff engine, production-shortfall alert, `🧊 Inventory` React page. | ✅ Complete |
 | 12 | **Order-first billing** — a new bill is a `pending` ORDER (editable, stock-reserving, no invoice number, no money) until it is *delivered*. `PATCH` / `deliver` / `cancel` endpoints, optimistic locking via `revision`, and **one open order per agency** enforced by a partial unique index. Pending Orders UI. | ✅ Complete |
-| 13 | **Auth hardening** — `POST /auth/refresh` (rotating httpOnly refresh tokens) fixing the **15-minute forced logout**; real password reset; logout that actually revokes; lockout re-lock bug; user-enumeration holes (timing + unlimited lookup endpoints); true Google signup. | ✅ Complete |
+| 13 | **Auth hardening** — `POST /auth/refresh` (rotating httpOnly refresh tokens) fixing the **15-minute forced logout**; real password reset; logout that actually revokes; lockout re-lock bug; user-enumeration holes (timing + unlimited lookup endpoints); true Google signup; signup gate as a server-signed ticket. | ✅ Complete |
+| 14 | **Settings repair + My Profile** — the signup code now actually works when changed (it was read from `.env`, not the DB); stopped leaking it to every manager; fixed the response-shape bug that blanked business info and **wiped it on save**; deleted the `deleteMany({})` re-seed data bomb; new `👤 My Profile` page (name, mobile, change password) reachable from the sidebar. | ✅ Complete |
 
 ---
 
@@ -876,6 +927,29 @@ the running server (incl. real PDF generation); the test invoice was removed and
 *JWT_SECRET signs access tokens too, any logged-in user's access token would pass the signup gate (there is a*
 *test for precisely that). Google also moved to step 2, behind the gate, and its button now reads "Sign up with*
 *Google" rather than "Sign in". 15 live checks.*
+
+*Settings repair + My Profile: 2026-07-13 — audited the owner Settings page and found four real bugs.*
+*(1) **The signup secret code did nothing when changed.** `Settings.signup.secretCode` was stored in Mongo and*
+*editable in the UI, but `auth.service` read `process.env.SIGNUP_SECRET` and ignored the DB. This was live: the DB*
+*held `VRUNDAVAN2026` while `.env` held `vrundavan2024`, and only the `.env` one worked — so whoever "rotated" the*
+*code hadn't. The DB is now authoritative (env only bootstraps on first run), compared in constant time, min 8 chars.*
+*⚠️ OPERATIONAL: the working signup code is now whatever is in Settings, NOT `.env`.*
+*(2) **The code leaked to every manager.** `GET /api/settings` is `protect` only and returned the whole document,*
+*and `Dashboard.js` fetches it on load for ALL users — so the plaintext code sat in every manager's browser. The*
+*server now strips `signup` for non-owners.*
+*(3) **A response-shape bug was silently wiping company data.** The API returns `data.settings.business` but both*
+*`Settings.js` and `Dashboard.js` read `data.business` → undefined → the Settings page rendered blank, and pressing*
+*"Save All" PUT those blanks back, WIPING the company and bank details. It also meant WhatsApp invoices went out*
+*with no company name. (PDFs were fine — `pdf.service` loads Settings server-side.)*
+*(4) **The re-seed button was a data bomb.** The UI button was inert, but `POST /products/reseed` was live and*
+*called `Product.deleteMany({})`. Since inventory shipped, products are referenced by ObjectId from StockMovement*
+*and Bill.items — re-seeding would have orphaned the whole stock ledger and every past bill line. Route, controller*
+*and service deleted.*
+*Also added `👤 My Profile` (`/api/users/me`) for every role — edit first/last name and mobile, change password*
+*(requires the current one; a Google account with no password may ADD one). Revokes every other session but*
+*re-issues this device, so you aren't logged out of the page you're standing on. `username`, `email`, `role` and*
+*`status` are IGNORED by the service, not merely unvalidated — there is a test that posts `role: "owner"` and asserts*
+*it stays `manager`. Reached by clicking your own name in the sidebar, where people already look. 26 live checks.*
 
 *Last Updated: 2026-07-13 | Project: ICEPRO ERP v2.0 | Author: Utsav Tala*
 *Cleanup pass: 2026-07-10 — removed Firebase remnants, dead scripts, unused packages; added Prettier/ESLint; updated repo structure docs.*

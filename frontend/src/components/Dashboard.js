@@ -9,6 +9,7 @@ import { CreateBillModal }                    from "./BillModal";
 import { PaymentModal }                       from "./PaymentModal";
 import { ProductsPage }                       from "./ProductsPage";
 import { InventoryPage }                      from "./InventoryPage";
+import { ProfilePage }                        from "./ProfilePage";
 import { VehiclesPage }                       from "./Vehicles";
 import { SettingsPage }                       from "./Settings";
 import { ReportsPage }                        from "./ReportsPage";
@@ -280,7 +281,9 @@ function TransactionHistoryModal({ agency, txns, loading, onClose, bills, agenci
 }
 
 // ── MAIN DASHBOARD ────────────────────────────────────────────────────────────
-export function Dashboard({ user, onLogout }) {
+// onUserUpdate: App.js already passes it, but it was never destructured — so the profile
+// page's live name update would have silently done nothing.
+export function Dashboard({ user, onLogout, onUserUpdate }) {
   const [page,       setPage]       = useState("dashboard");
   const [selAgency,  setSelAgency]  = useState(null);
   const [agencies,   setAgencies]   = useState([]);
@@ -333,8 +336,13 @@ export function Dashboard({ user, onLogout }) {
         // Products carry onHand/committed/available — BillModal uses them to show live
         // stock as items are added, with no second request.
         if (prodRes.success) setProducts(norm(prodRes.data.products));
-        if (setRes.success && setRes.data) {
-           setAppSettings({ business: setRes.data.business, bank: setRes.data.bank });
+        // The API wraps it: data.settings.business, NOT data.business. Reading the wrong
+        // level left appSettings undefined, so WhatsApp invoices went out with no company
+        // name and no bank details. (Server-rendered PDFs were unaffected — pdf.service
+        // loads Settings itself.)
+        if (setRes.success && setRes.data?.settings) {
+           const s = setRes.data.settings;
+           setAppSettings({ business: s.business, bank: s.bank });
         }
         if (invRes.success) setInvSummary(invRes.data);
         setOrders([]); // Orders not implemented in backend yet
@@ -582,10 +590,26 @@ export function Dashboard({ user, onLogout }) {
           </div>
         ))}
         <div style={{ flex: 1 }} />
-        <div className="sidebar-footer" style={{ padding: "12px 14px", borderRadius: 10, background: "#2a0e0e" }}>
-          <div style={{ fontSize: 10, color: "#6b2a2a", textTransform: "uppercase" }}>Signed in as</div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#f5c518", marginTop: 2 }}>{user?.name || "Owner"}</div>
-          <div style={{ fontSize: 10, color: "#6b2a2a", marginTop: 1 }}>{user?.role}</div>
+        {/* The "signed in as" block is where people already look for their own account,
+            so it IS the way into the profile — click your own name. No extra nav item,
+            and nothing new to learn. */}
+        <div className="sidebar-footer" style={{
+          padding: "12px 14px", borderRadius: 10, background: "#2a0e0e",
+          border: page === "profile" && !selAgency ? "1px solid #f5c518" : "1px solid transparent",
+        }}>
+          <div
+            onClick={() => goPage("profile")}
+            title="View and edit your profile"
+            style={{ cursor: "pointer" }}
+          >
+            <div style={{ fontSize: 10, color: "#6b2a2a", textTransform: "uppercase" }}>Signed in as</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 2 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#f5c518" }}>{user?.name || "Owner"}</div>
+              <span style={{ fontSize: 11, color: "#6b2a2a" }}>⚙️</span>
+            </div>
+            <div style={{ fontSize: 10, color: "#6b2a2a", marginTop: 1 }}>{user?.role}</div>
+            <div style={{ fontSize: 10, color: "#9a5555", marginTop: 6, fontWeight: 600 }}>👤 My Profile</div>
+          </div>
           <button className="btn btn-danger" style={{ marginTop: 10, width: "100%", fontSize: 11, padding: 6 }} onClick={doLogout}>Logout</button>
         </div>
       </div>
@@ -993,6 +1017,11 @@ export function Dashboard({ user, onLogout }) {
         {/* ════ VEHICLES ════ */}
         {page === "inventory" && (
           <InventoryPage currentUser={user} />
+        )}
+
+        {/* Every role — this is your own account, not an admin screen. */}
+        {page === "profile" && (
+          <ProfilePage user={user} onUserUpdate={onUserUpdate} />
         )}
 
         {page === "vehicles" && <VehiclesPage />}

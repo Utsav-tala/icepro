@@ -10,6 +10,16 @@ const mongoose = require("mongoose");
 const settingsSchema = new mongoose.Schema(
   {
     signup: {
+      // THE authoritative signup secret code. `SIGNUP_SECRET` in .env only BOOTSTRAPS
+      // this on first run (see getSettings below) — after that the database wins, so the
+      // owner can rotate the code from the Settings page and have it actually take effect.
+      //
+      // It used to be the other way round: this field existed and was editable, but
+      // auth.service read process.env.SIGNUP_SECRET and ignored it entirely. Changing the
+      // code in the UI did nothing — the old .env value kept working and the new one never
+      // did. Worse than a missing feature: an owner rotating a leaked code hadn't.
+      //
+      // NEVER returned to a non-owner — see settings.controller.js.
       secretCode: { type: String, trim: true, default: "" },
     },
     business: {
@@ -48,6 +58,15 @@ settingsSchema.statics.getSettings = async function () {
   if (!settings) {
     settings = await this.create({});  // Creates with all defaults
   }
+
+  // One-time bootstrap: seed the signup code from .env if the database has none yet.
+  // This runs only while the field is empty, so once the owner sets a code from the
+  // Settings page, changing SIGNUP_SECRET in .env can never silently override it.
+  if (!settings.signup?.secretCode && process.env.SIGNUP_SECRET) {
+    settings.signup.secretCode = process.env.SIGNUP_SECRET;
+    await settings.save();
+  }
+
   return settings;
 };
 

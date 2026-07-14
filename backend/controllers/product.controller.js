@@ -107,27 +107,6 @@ const seedProducts = async (req, res, next) => {
   }
 };
 
-/**
- * @desc    Reseed products (destructive — deletes all, re-inserts from catalog)
- * @route   POST /api/products/reseed
- * @access  Private — owner only
- * @body    { catalog: [{ name, rate, discount }] }
- */
-const reseedProducts = async (req, res, next) => {
-  try {
-    const { catalog } = req.body;
-    if (!Array.isArray(catalog) || catalog.length === 0) {
-      return res.status(400).json({ success: false, message: "catalog array is required" });
-    }
-    const result = await productService.reseedProducts(catalog, req.user?.fullName || "Owner");
-    res.status(200).json(
-      new ApiResponse(200, result, `Reseed complete — ${result.insertedCount} products inserted`)
-    );
-  } catch (error) {
-    next(error);
-  }
-};
-
 module.exports = {
   getProducts,
   getProductById,
@@ -135,5 +114,4 @@ module.exports = {
   updateProduct,
   deleteProduct,
   seedProducts,
-  reseedProducts,
 };

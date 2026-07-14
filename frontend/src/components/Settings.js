@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 
-import { C, ITEM_CATALOG } from "../constants";
+import { C } from "../constants";
 import { PageHeader, Spin, Lbl } from "./UI";
 
 export function SettingsPage({ currentUser }) {
@@ -22,29 +22,30 @@ export function SettingsPage({ currentUser }) {
   const [origBiz, setOrigBiz] = useState({});
   const [origBank, setOrigBank] = useState({});
 
-  // ── Product catalog management state ──────────────────────────────────────
   const [prodCount, setProdCount] = useState(null);
-  const [seedFlag, setSeedFlag] = useState(null);  // productsSeedDone value
-  const [reseedLoading, setReseedLoading] = useState(false);
-  const [reseedMsg, setReseedMsg] = useState({ text: "", type: "" });
 
   useEffect(() => {
     async function fetchSettings() {
       try {
         const res = await api.get("/settings");
-        if (res.success && res.data) {
-          const { signup: sG, business: bG, bank: baG, appConfig: appG } = res.data;
-          if (sG) { setSignup(sG); setOrigSignup(sG); }
-          if (bG) { setBiz(bG); setOrigBiz(bG); }
-          if (baG) { setBank(baG); setOrigBank(baG); }
-          if (appG) { setSeedFlag(appG.productsSeedDone); }
+
+        // The API wraps it: data.settings.business — NOT data.business.
+        // Reading the wrong level meant NOTHING loaded: every field stayed at its empty
+        // default, the page rendered blank, and hitting "Save All" PUT those blanks back,
+        // WIPING the company and bank details. Which is also why invoices shared over
+        // WhatsApp were going out with no company name. (Server-rendered PDFs were fine —
+        // pdf.service loads Settings itself.)
+        const s = res.success ? res.data?.settings : null;
+        if (s) {
+          // `signup` is only present for the owner — the server strips it for everyone
+          // else, so the secret code never reaches a manager's browser.
+          if (s.signup)   { setSignup(s.signup);   setOrigSignup(s.signup); }
+          if (s.business) { setBiz(s.business);    setOrigBiz(s.business); }
+          if (s.bank)     { setBank(s.bank);       setOrigBank(s.bank); }
         }
 
-        // Count products
-        try {
-          const prodRes = await api.get("/products");
-          if (prodRes.success) setProdCount(prodRes.data.length);
-        } catch (e) {}
+        const prodRes = await api.get("/products");
+        if (prodRes.success) setProdCount(prodRes.data.total ?? prodRes.data.products?.length ?? 0);
       } catch (e) {
         console.error("Error loading settings:", e);
         setMsg({ text: "Failed to load settings.", type: "err" });
@@ -70,37 +71,32 @@ export function SettingsPage({ currentUser }) {
   }
 
   async function handleSaveAll() {
+    if (signup.secretCode !== undefined && signup.secretCode.trim().length < 8) {
+      return setMsg({ text: "The signup secret code must be at least 8 characters.", type: "err" });
+    }
+
     setSaving(true);
     setMsg({ text: "", type: "" });
     try {
       const res = await api.put("/settings", {
-        signup,
+        // Only the owner ever holds `signup` (the server strips it for everyone else), so
+        // only send it when we actually have it — otherwise a manager's save would blank it.
+        ...(signup?.secretCode ? { signup } : {}),
         business: biz,
-        bank
+        bank,
       });
       if (res.success) {
         setOrigSignup({ ...signup });
         setOrigBiz({ ...biz });
         setOrigBank({ ...bank });
-        setMsg({ text: "All settings saved successfully!", type: "ok" });
+        setMsg({ text: "Settings saved.", type: "ok" });
         setEditing(false);
         setTimeout(() => setMsg({ text: "", type: "" }), 3000);
       }
     } catch (e) {
-      console.error(e);
-      setMsg({ text: "Failed to save settings.", type: "err" });
+      setMsg({ text: e.errors?.[0]?.message || e.message || "Failed to save settings.", type: "err" });
     }
     setSaving(false);
-  }
-
-  // ── Re-seed products — owner only ─────────────────────────────────────────
-  // Step 1: Clears productsSeedDone and cleanedDuplicates flags in appConfig.
-  // Step 2: Deletes ALL existing products from Firestore.
-  // Step 3: Re-seeds all 216 items from ITEM_CATALOG fresh.
-  // After this, the Dashboard listener will NOT auto-seed again (flags are reset
-  // and re-set after seeding completes here directly).
-  async function handleReseed() {
-    alert("Re-seeding is disabled in the Node.js backend migration version to prevent accidental data loss.");
   }
 
   if (loading) {
@@ -146,10 +142,20 @@ export function SettingsPage({ currentUser }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 20, maxWidth: 640 }}>
 
-        {/* ── Signup Code ── */}
+        {/* ── Signup Code — owner only ──────────────────────────────────────
+            The server strips `signup` from GET /api/settings for anyone who isn't the
+            owner, so a manager never receives the code at all and this card never renders
+            for them. It used to be returned to EVERY logged-in user, and Dashboard fetches
+            settings on load — so the plaintext code was sitting in every manager's browser. */}
+        {currentUser?.role === "owner" && (
         <div className="card">
           <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>🔐 Signup Secret Code</div>
-          <div style={{ fontSize: 13, color: C.textLight, marginBottom: 14 }}>Code required for new staff to create an account.</div>
+          <div style={{ fontSize: 13, color: C.textLight, marginBottom: 10 }}>
+            Anyone with this code can create a <strong>manager</strong> account. Change it if it leaks.
+          </div>
+          <div style={{ background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: 10, padding: "9px 13px", marginBottom: 14, fontSize: 12, color: "#065f46" }}>
+            ✓ Changing this takes effect <strong>immediately</strong>. The old code stops working at once.
+          </div>
 
           {editing ? (
             <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
@@ -158,20 +164,34 @@ export function SettingsPage({ currentUser }) {
                 <input
                   className="inp"
                   type={showCode ? "text" : "password"}
-                  value={signup.secretCode}
-                  onChange={e => setSignup({ ...signup, secretCode: e.target.value })}
-                  placeholder="e.g. VRUNDAVAN2026"
+                  value={signup.secretCode || ""}
+                  onChange={e => { setSignup({ ...signup, secretCode: e.target.value }); setMsg({ text: "", type: "" }); }}
+                  placeholder="At least 8 characters"
                   style={{ paddingRight: 40 }}
                 />
                 <button onClick={() => setShowCode(!showCode)} style={{ position: "absolute", right: 12, top: "60%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>
                   {showCode ? "🙈" : "👁️"}
                 </button>
+                {signup.secretCode && signup.secretCode.trim().length < 8 && (
+                  <div style={{ color: C.red, fontSize: 11, marginTop: 4, fontWeight: 600 }}>
+                    Must be at least 8 characters
+                  </div>
+                )}
               </div>
             </div>
           ) : (
-            <InfoRow label="Secret Code" value={signup.secretCode} hidden={!showCode} />
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <InfoRow label="Secret Code" value={signup.secretCode} hidden={!showCode} />
+              </div>
+              <button onClick={() => setShowCode(!showCode)}
+                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>
+                {showCode ? "🙈" : "👁️"}
+              </button>
+            </div>
           )}
         </div>
+        )}
 
         {/* ── Business Info ── */}
         <div className="card">
@@ -240,54 +260,32 @@ export function SettingsPage({ currentUser }) {
           )}
         </div>
 
-        {/* ── Product Catalog Management — Owner only ── */}
-        <div className="card" style={{ borderLeft: `4px solid ${C.yellow}` }}>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>📦 Product Catalog Management</div>
-          <div style={{ fontSize: 13, color: C.textLight, marginBottom: 16 }}>
-            Manage the default product catalog. Use re-seed only if products are corrupted or missing.
+        {/* ── Product Catalogue ────────────────────────────────────────────
+            The "Re-seed from Default Catalog" button that used to live here is GONE, and
+            so is the endpoint behind it. It called Product.deleteMany({}) — a hard delete —
+            and since the inventory module shipped, products are referenced by ObjectId from
+            StockMovement.productId and Bill.items[].productId. Re-seeding would have
+            orphaned the entire stock ledger and every historical bill line. (The button was
+            already inert: it only popped an alert saying re-seeding was disabled. But the
+            live route behind it was one re-enable away from destroying the data.) */}
+        <div className="card">
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.text, marginBottom: 6 }}>📦 Product Catalogue</div>
+          <div style={{ fontSize: 13, color: C.textLight, marginBottom: 14 }}>
+            Products are managed individually from the Products page.
           </div>
 
-          {/* Status row */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
-            <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
-              <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Products in Database</div>
-              <div style={{ fontSize: 24, fontWeight: 800, color: C.redDark }}>
-                {prodCount === null ? <Spin /> : prodCount}
-              </div>
-            </div>
-            <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
-              <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Catalog Status</div>
-              <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>
-                {seedFlag === true
-                  ? <span style={{ color: "#065f46" }}>✅ Seeded & Protected</span>
-                  : <span style={{ color: "#d97706" }}>⚠️ Not yet protected</span>
-                }
-              </div>
+          <div style={{ background: "#fff8f8", border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", textAlign: "center", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, color: C.textLight, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Active Products</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: C.redDark }}>
+              {prodCount === null ? <Spin /> : prodCount}
             </div>
           </div>
 
-          {/* Info box */}
-          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#92400e" }}>
-            <strong>⚠️ Warning:</strong> Re-seeding will permanently delete all {prodCount} existing products and replace them with {ITEM_CATALOG.length} default catalog items. Any custom products or rate changes you made will be lost.
+          <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#92400e" }}>
+            <strong>Bulk re-seeding has been removed.</strong> It deleted every product outright,
+            which would now orphan the stock ledger and every past bill line that points at them.
+            To retire a product, deactivate it on the Products page — that keeps its history intact.
           </div>
-
-          {reseedMsg.text && (
-            <div className={reseedMsg.type === "err" ? "err-box" : "ok-box"} style={{ marginBottom: 12 }}>
-              {reseedMsg.text}
-            </div>
-          )}
-
-          <button
-            className="btn btn-danger"
-            style={{ fontSize: 13, padding: "10px 20px" }}
-            onClick={handleReseed}
-            disabled={reseedLoading}
-          >
-            {reseedLoading
-              ? <><Spin /> Re-seeding ({ITEM_CATALOG.length} items)...</>
-              : `🔄 Re-seed from Default Catalog (${ITEM_CATALOG.length} items)`
-            }
-          </button>
         </div>
 
       </div>
