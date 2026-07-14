@@ -74,9 +74,11 @@ every variable there marked `[PROD]` must be filled in. The ones that break thin
 - **`FRONTEND_ORIGIN`** — the Vercel URL. Without it, CORS blocks every API call.
 - **`FRONTEND_URL`** — the Vercel URL. Without it, verification emails link to `localhost:3000`
   and every new user gets a dead link.
-- **`EMAIL_USER` + `EMAIL_PASS`** — without both, the app quietly falls back to the Ethereal
-  sandbox, which accepts mail and **delivers nothing**. Signup looks fine; no email ever arrives.
-  `EMAIL_PASS` must be a Google **App Password**, not your normal Gmail password.
+- **`BREVO_API_KEY` + `EMAIL_FROM`** — email goes out over Brevo's HTTP API. **Do not try to
+  use Gmail/SMTP here: Render blocks outbound SMTP ports.** Gmail failed with `ETIMEDOUT,
+  command: 'CONN'` — the TCP connection never opened, so no credential was ever sent and no
+  Gmail setting could fix it. Brevo rides HTTPS on 443, the same port the API already uses.
+  `EMAIL_FROM` must be an address **verified as a sender** inside Brevo, or it rejects the send.
 
 You do not have `FRONTEND_ORIGIN` / `FRONTEND_URL` yet — Vercel doesn't exist until Step 4.
 Leave them for now and come back in Step 5. Do **not** set `PORT` (Render injects it) and leave

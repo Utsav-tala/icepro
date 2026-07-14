@@ -1,100 +1,112 @@
 // backend/utils/email.js
-// Centralised email sender using Nodemailer.
-// Handles verification and password reset emails.
+// Centralised email sender. Handles verification and password-reset emails.
 //
-// Priority:
-//   1. Gmail OAuth2  — set EMAIL_USER, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN in .env
-//   2. Gmail Simple  — set EMAIL_USER + EMAIL_PASS in .env (App Password recommended)
-//   3. Ethereal      — auto-created free sandbox, preview URL printed in terminal
+// Delivery is over Brevo's HTTP API, NOT SMTP.
+//
+// Why not SMTP: Render (like most PaaS hosts) blocks outbound SMTP ports as an anti-spam
+// measure. Gmail failed there with `ETIMEDOUT, command: 'CONN'` — the TCP connection to
+// smtp.gmail.com:465 never opened, so no credential was ever sent and no Gmail setting
+// could have fixed it. An HTTP API rides port 443, the same port the rest of the API
+// already uses, so it cannot be port-blocked.
+//
+// Transports, in order:
+//   1. Brevo HTTP API — set BREVO_API_KEY + EMAIL_FROM. Used whenever the key is present.
+//   2. Ethereal       — LOCAL DEV ONLY. A fake inbox: it accepts mail and delivers nothing,
+//                       printing a preview URL instead. Refused in production.
 
-const nodemailer = require("nodemailer");
+const nodemailer = require("nodemailer");   // only used for the Ethereal dev sandbox
 
-const FE_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-const FROM   = process.env.EMAIL_USER
-  ? `"Vrundavan Ice Cream" <${process.env.EMAIL_USER}>`
-  : "ICEPRO ERP <noreply@example.com>";
-
+const FE_URL  = process.env.FRONTEND_URL || "http://localhost:3000";
 const IS_PROD = process.env.NODE_ENV === "production";
 
-const SMTP_OPTS = {
-  // Force IPv4. Render's containers have no IPv6 route, but DNS hands back Gmail's IPv6
-  // address first, so the connection failed instantly with ENETUNREACH on 2607:f8b0::…:465.
-  // app.js also sets dns ipv4first process-wide; this pins it at the socket too, so the
-  // mailer still works if it is ever used outside the server entry point (scripts, tests).
-  family: 4,
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_URL     = "https://api.brevo.com/v3/smtp/email";
 
-  // Fail fast instead of hanging. Nodemailer's defaults will sit on a dead socket for
-  // minutes — that is what made signup spin forever before it eventually gave up.
-  connectionTimeout: 10000,   // TCP connect
-  greetingTimeout:   10000,   // server banner
-  socketTimeout:     20000,   // inactivity mid-conversation
-};
+// Must be an address verified as a sender in Brevo, or Brevo rejects the send.
+const FROM_EMAIL = process.env.EMAIL_FROM || process.env.EMAIL_USER || "";
+const FROM_NAME  = process.env.EMAIL_FROM_NAME || "Vrundavan Ice Cream";
 
-// ── Transporter factory (lazy, singleton) ─────────────────────────────────────
-let _transporter = null;
-
-async function getTransporter() {
-  if (_transporter) return _transporter;
-
-  // Option 1: Gmail + OAuth2
-  if (
-    process.env.EMAIL_USER &&
-    process.env.CLIENT_ID &&
-    process.env.CLIENT_SECRET &&
-    process.env.REFRESH_TOKEN
-  ) {
-    _transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type:         "OAuth2",
-        user:         process.env.EMAIL_USER,
-        clientId:     process.env.CLIENT_ID,
-        clientSecret: process.env.CLIENT_SECRET,
-        refreshToken: process.env.REFRESH_TOKEN,
-      },
-      ...SMTP_OPTS,
-    });
-    console.log("📧 Email: using Gmail OAuth2");
-    return _transporter;
+// ── Transport 1: Brevo HTTP API ───────────────────────────────────────────────
+// Node 20 ships fetch globally, so this needs no new dependency.
+async function sendViaBrevo({ to, toName, subject, html }) {
+  if (!FROM_EMAIL) {
+    throw new Error("EMAIL_FROM is not set — Brevo needs a verified sender address.");
   }
 
-  // Option 2: Gmail + App Password
-  if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-    _transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-      ...SMTP_OPTS,
-    });
-    console.log("📧 Email: using Gmail + App Password");
-    return _transporter;
+  // Don't hang forever if Brevo is slow or unreachable.
+  const abort = AbortSignal.timeout(15000);
+
+  const res = await fetch(BREVO_URL, {
+    method:  "POST",
+    signal:  abort,
+    headers: {
+      "api-key":      BREVO_API_KEY,
+      "content-type": "application/json",
+      accept:         "application/json",
+    },
+    body: JSON.stringify({
+      sender:      { name: FROM_NAME, email: FROM_EMAIL },
+      to:          [{ email: to, name: toName || to }],
+      subject,
+      htmlContent: html,
+    }),
+  });
+
+  // fetch does NOT throw on 4xx/5xx — it resolves. Check explicitly, and surface Brevo's
+  // own message: it says exactly what is wrong ("sender not valid", "unauthorized"...).
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Brevo rejected the send (HTTP ${res.status}): ${detail}`);
   }
 
-  // Option 3: Ethereal sandbox — a FAKE inbox. It accepts mail and delivers nothing.
-  // That is fine locally and catastrophic in production: every user would be told to
-  // check an email that was never sent. Refuse rather than lie about it.
+  const data = await res.json().catch(() => ({}));
+  console.log(`📨 Email sent to ${to} via Brevo (messageId: ${data.messageId || "?"})`);
+  return data;
+}
+
+// ── Transport 2: Ethereal sandbox — LOCAL DEV ONLY ────────────────────────────
+let _etherealTransport = null;
+
+async function sendViaEthereal({ to, subject, html }) {
+  if (!_etherealTransport) {
+    const acct = await nodemailer.createTestAccount();
+    _etherealTransport = nodemailer.createTransport({
+      host: "smtp.ethereal.email",
+      port: 587,
+      secure: false,
+      auth: { user: acct.user, pass: acct.pass },
+      connectionTimeout: 10000,
+      greetingTimeout:   10000,
+      socketTimeout:     20000,
+    });
+    console.log("📧 Email: Ethereal sandbox (dev only — nothing is really delivered)");
+  }
+
+  const info = await _etherealTransport.sendMail({
+    from: `"${FROM_NAME}" <${FROM_EMAIL || "noreply@example.com"}>`,
+    to, subject, html,
+  });
+
+  console.log("-----------------------------------------------------");
+  console.log("📨 Email preview (not delivered): " + nodemailer.getTestMessageUrl(info));
+  console.log("-----------------------------------------------------");
+  return info;
+}
+
+// ── The one door every email goes through ─────────────────────────────────────
+async function deliver({ to, toName, subject, html }) {
+  if (BREVO_API_KEY) return sendViaBrevo({ to, toName, subject, html });
+
+  // No key. In dev that is fine — fall back to the sandbox. In production it is not:
+  // Ethereal would accept every message and deliver none, so users would be told to check
+  // an inbox that will never receive anything. Fail loudly instead of lying.
   if (IS_PROD) {
     throw new Error(
-      "Email is not configured (EMAIL_USER/EMAIL_PASS are unset). Refusing to fall back " +
-      "to the Ethereal sandbox in production — it delivers nothing."
+      "BREVO_API_KEY is not set. Refusing to fall back to the Ethereal sandbox in " +
+      "production — it accepts mail and delivers nothing."
     );
   }
-
-  const testAccount = await nodemailer.createTestAccount();
-  _transporter = nodemailer.createTransport({
-    host:   "smtp.ethereal.email",
-    port:   587,
-    secure: false,
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-    ...SMTP_OPTS,
-  });
-  console.log("📧 Email: using Ethereal sandbox (no real email will be delivered)");
-  return _transporter;
+  return sendViaEthereal({ to, subject, html });
 }
 
 // ── Shared HTML wrapper ───────────────────────────────────────────────────────
@@ -159,24 +171,12 @@ const sendVerificationEmail = async (user, rawToken) => {
       <a href="${link}" style="color:#c8181e;word-break:break-all;">${link}</a>
     </p>`;
 
-  const tp   = await getTransporter();
-  const info = await tp.sendMail({
-    from:    FROM,
+  await deliver({
     to:      user.email,
+    toName:  user.firstName,
     subject: "Verify your ICEPRO email address",
     html:    htmlWrapper("Verify Your Email", body),
   });
-
-  // Always log the preview URL — useful in all environments
-  const previewUrl = nodemailer.getTestMessageUrl(info);
-  if (previewUrl) {
-    console.log("-----------------------------------------------------");
-    console.log("📨 Verification email preview:");
-    console.log("👉 " + previewUrl);
-    console.log("-----------------------------------------------------");
-  } else {
-    console.log(`📨 Verification email sent to ${user.email} (messageId: ${info.messageId})`);
-  }
 };
 
 // ── Send password reset ───────────────────────────────────────────────────────
@@ -212,23 +212,12 @@ const sendPasswordResetEmail = async (user, rawToken) => {
       everywhere, so if you are worried, reset it yourself.
     </p>`;
 
-  const tp   = await getTransporter();
-  const info = await tp.sendMail({
-    from:    FROM,
+  await deliver({
     to:      user.email,
+    toName:  user.firstName,
     subject: "Reset your ICEPRO password",
     html:    htmlWrapper("Reset Your Password", body),
   });
-
-  const previewUrl = nodemailer.getTestMessageUrl(info);
-  if (previewUrl) {
-    console.log("-----------------------------------------------------");
-    console.log("🔑 Password reset email preview:");
-    console.log("👉 " + previewUrl);
-    console.log("-----------------------------------------------------");
-  } else {
-    console.log(`🔑 Password reset email sent to ${user.email} (messageId: ${info.messageId})`);
-  }
 };
 
 module.exports = { sendVerificationEmail, sendPasswordResetEmail };
