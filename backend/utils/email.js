@@ -16,10 +16,15 @@ const FROM   = process.env.EMAIL_USER
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
-// Fail fast instead of hanging. Cloud hosts frequently block or blackhole outbound SMTP
-// ports, and nodemailer's defaults will sit on a dead socket for minutes. A signup that
-// hangs is worse than one that reports a clear failure, so cap every stage.
-const SMTP_TIMEOUTS = {
+const SMTP_OPTS = {
+  // Force IPv4. Render's containers have no IPv6 route, but DNS hands back Gmail's IPv6
+  // address first, so the connection failed instantly with ENETUNREACH on 2607:f8b0::…:465.
+  // app.js also sets dns ipv4first process-wide; this pins it at the socket too, so the
+  // mailer still works if it is ever used outside the server entry point (scripts, tests).
+  family: 4,
+
+  // Fail fast instead of hanging. Nodemailer's defaults will sit on a dead socket for
+  // minutes — that is what made signup spin forever before it eventually gave up.
   connectionTimeout: 10000,   // TCP connect
   greetingTimeout:   10000,   // server banner
   socketTimeout:     20000,   // inactivity mid-conversation
@@ -47,7 +52,7 @@ async function getTransporter() {
         clientSecret: process.env.CLIENT_SECRET,
         refreshToken: process.env.REFRESH_TOKEN,
       },
-      ...SMTP_TIMEOUTS,
+      ...SMTP_OPTS,
     });
     console.log("📧 Email: using Gmail OAuth2");
     return _transporter;
@@ -61,7 +66,7 @@ async function getTransporter() {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,
       },
-      ...SMTP_TIMEOUTS,
+      ...SMTP_OPTS,
     });
     console.log("📧 Email: using Gmail + App Password");
     return _transporter;
@@ -86,7 +91,7 @@ async function getTransporter() {
       user: testAccount.user,
       pass: testAccount.pass,
     },
-    ...SMTP_TIMEOUTS,
+    ...SMTP_OPTS,
   });
   console.log("📧 Email: using Ethereal sandbox (no real email will be delivered)");
   return _transporter;

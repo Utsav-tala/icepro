@@ -5,6 +5,16 @@
 // ── Step 1: Load env vars FIRST before any module reads process.env ───────────
 require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 
+// ── Step 1b: Prefer IPv4 when resolving hostnames ─────────────────────────────
+// Node 18+ returns DNS results in the order the resolver gives them, which for Google is
+// IPv6 first. Render's containers have no IPv6 route, so outbound SMTP died on the very
+// first packet with:
+//     connect ENETUNREACH 2607:f8b0:400e:c0d::6d:465
+// i.e. it dialled Gmail's IPv6 address and there was no network to reach it on. Nothing
+// was blocking SMTP — we were calling an unreachable address. Ask for IPv4 first.
+// Process-wide and must run before any socket is opened, hence its position here.
+require("dns").setDefaultResultOrder("ipv4first");
+
 const express    = require("express");
 const cors       = require("cors");
 const helmet     = require("helmet");
