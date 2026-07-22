@@ -110,7 +110,6 @@ icepro-new_version/                (repo root)
 │           ├── InventoryPage.js  ← 🧊 Stock levels, production-shortfall alert, movement ledger
 │           ├── ProfilePage.js    ← 👤 My Profile — name, mobile, change password (ALL roles)
 │           ├── Settings.js       ← Business & bank settings; signup code (owner only)
-│           ├── Vehicles.js       ← ⚠️ UI placeholder — dummy data, no API yet
 │           ├── ReportsPage.js    ← 📊 Analytics dashboard (KPIs + breakdown tables + print)
 │           └── UI.js             ← Shared UI components (Logo, Tag, SC, etc.)
 │
@@ -134,7 +133,6 @@ icepro-new_version/                (repo root)
     │   ├── Transaction.js     ← Financial ledger (bills + payments)
     │   ├── StockMovement.js   ← 📦 Inventory ledger (immutable, two signed delta columns)
     │   ├── Product.js         ← + onHand / committed / lowStockThreshold, virtual `available`
-    │   ├── Order.js           ← ⚠️ Schema only — no controller/service yet
     │   ├── Counter.js         ← Auto-incrementing invoice number
     │   └── Settings.js
     ├── scripts/
@@ -147,7 +145,6 @@ icepro-new_version/                (repo root)
     │   ├── product.routes.js
     │   ├── user.routes.js      ← 👤 Self-service profile (/api/users/me) — no :id, ever
     │   ├── inventory.routes.js ← 📦 Stock, shortfalls, movement ledger, reconcile
-    │   ├── order.routes.js    ← ⚠️ Stub — health-check only, no controller yet
     │   ├── dashboard.routes.js
     │   ├── settings.routes.js
     │   └── reports.routes.js   ← 📊 Analytics aggregation endpoint (owner/manager)
@@ -789,6 +786,7 @@ LOCK_TIME_MINUTES=15
 | 12 | **Order-first billing** — a new bill is a `pending` ORDER (editable, stock-reserving, no invoice number, no money) until it is *delivered*. `PATCH` / `deliver` / `cancel` endpoints, optimistic locking via `revision`, and **one open order per agency** enforced by a partial unique index. Pending Orders UI. | ✅ Complete |
 | 13 | **Auth hardening** — `POST /auth/refresh` (rotating httpOnly refresh tokens) fixing the **15-minute forced logout**; real password reset; logout that actually revokes; lockout re-lock bug; user-enumeration holes (timing + unlimited lookup endpoints); true Google signup; signup gate as a server-signed ticket. | ✅ Complete |
 | 14 | **Settings repair + My Profile** — the signup code now actually works when changed (it was read from `.env`, not the DB); stopped leaking it to every manager; fixed the response-shape bug that blanked business info and **wiped it on save**; deleted the `deleteMany({})` re-seed data bomb; new `👤 My Profile` page (name, mobile, change password) reachable from the sidebar. | ✅ Complete |
+| 15 | **Deployment** *(2026-07-14 → 07-15)* — live on Vercel (frontend) + Render (API) + Atlas. Dropped the Orders and Vehicles stubs; `vercel.json` SPA rewrite; `.puppeteerrc.cjs` so Chrome survives build → runtime; `dns.setDefaultResultOrder("ipv4first")`; email moved off Gmail SMTP (Render blocks the ports) onto **Brevo's HTTP API**. See `DEPLOYMENT.md`. | ✅ Complete |
 
 ---
 
@@ -811,13 +809,17 @@ LOCK_TIME_MINUTES=15
   field as missing → `null`, and **`null < 0` is TRUE in BSON sort order**, so the shortfall query reported
   every single product as short. Fixed on both sides: `$ifNull` in the query, and a real `$set` backfill
   (Step 0 of `backfillProductIds.js`). **Remember this whenever adding a field to an existing collection.**
-- **Orders Feature is Stubbed**: The `Order` model and routes exist but the UI only shows a placeholder. The backend `order.routes.js` exists but `order.controller.js` / `order.service.js` need full implementation. (`Order.items[]` already carries `productId`, so it can drive inventory when built.)
+- ~~**Orders Feature is Stubbed**~~ ✅ *removed 2026-07-14* — the `Order` model, routes and placeholder UI were
+  **deleted**, not implemented. Order-first billing (Phase 12) already covers the use case: a `pending` Bill *is*
+  the order. A second parallel Orders module would have been two sources of truth for the same thing.
 - **No Admin Panel for Role Management**: Changing a user's role must be done directly in MongoDB Compass or via a one-off Node script. A future `/api/users` admin route should be added.
 - ~~**No Token Refresh**~~ ✅ *fixed 2026-07-13* — see Phase 13. `POST /api/auth/refresh` now exists. Until it
   did, **every user was silently signed out mid-work every 15 minutes**: the access token expired, `api.js` called
   `/auth/refresh`, that 404'd, and the client wiped the token and forced a re-login. No refresh token had ever
   been issued to anyone either — `res.cookie` appeared nowhere in the backend.
-- **Vehicles Page is Placeholder**: `Vehicles.js` renders a UI stub with dummy vehicle data. A `Vehicle` model + routes need to be built.
+- ~~**Vehicles Page is Placeholder**~~ ✅ *removed 2026-07-14* — `Vehicles.js` and its dummy data were deleted
+  before deploying. It was a UI stub with no model or API behind it; shipping a page that only pretends to work
+  is worse than not shipping it. Rebuild from scratch if delivery-vehicle tracking is ever actually needed.
 - **No Image Upload Yet**: Cloudinary env vars are scaffolded but Multer/Cloudinary integration is not implemented (`config/cloudinary.js` is a no-op).
 - **Firebase migration complete** *(2026-07-10)*: `firebase-admin`, `migrateFirebase.js`, `peek.js/2/3`, and the Firebase service account JSON have been removed. The migration is permanently done.
 
@@ -825,16 +827,25 @@ LOCK_TIME_MINUTES=15
 
 ## 12. NEXT STEPS / ROADMAP
 
+> **This section is the ONLY roadmap.** `README.md` used to carry a duplicate copy and it drifted out of sync
+> (it still listed Orders and Vehicles as planned work weeks after they were deleted). The README section was
+> removed on 2026-07-19 — do not reintroduce it. The README describes what the project *is*; this file tracks
+> what is left to do.
+
 ### Immediate (To Complete the MERN Portfolio)
 - [x] **Pending / Delivered editable orders + one-open-order-per-agency** *(done 2026-07-12)* — see Phase 12.
 - [ ] **User Management Page** (owner only): List all users, change roles, deactivate accounts → `GET/PATCH /api/users`
-- [ ] **Orders Implementation**: Full backend CRUD + frontend UI for the Orders module
-- [ ] **Vehicles Module**: Model, routes, and UI for managing delivery vehicles
+      *(`/api/users` today is self-service only: `GET/PATCH /me`, `POST /me/password`. No admin listing exists.)*
+- ~~**Orders Implementation**~~ — **cancelled 2026-07-14.** Deleted rather than built; a `pending` Bill is the order.
+- ~~**Vehicles Module**~~ — **cancelled 2026-07-14.** Stub deleted before deploy; rebuild only if actually needed.
 
 ### Resume/Portfolio Enhancements
+- [ ] **Unit Tests with Jest + Supertest**: At minimum, test auth and bill creation services. **Highest-value item
+      left** — the repo currently has zero tests, and `createBill` (atomic invoice number + Transaction + stock
+      movement in one session) is both the most critical path and the most interesting one to test.
 - [ ] **API Documentation with Swagger/OpenAPI**: Auto-generate docs from route comments
-- [ ] **Unit Tests with Jest + Supertest**: At minimum, test auth and bill creation services
-- [ ] **Deployment**: Deploy backend on Railway/Render, frontend on Vercel, point to same MongoDB Atlas cluster
+- [x] **Deployment** *(done 2026-07-14 → 07-15)* — see Phase 15 and `DEPLOYMENT.md`. Frontend on Vercel, API on
+      Render, MongoDB Atlas. Live at https://icepro-eight.vercel.app/
 
 ### Future Production Features
 - [x] **PDF Invoice + Report Generation (server-side)** *(done 2026-07-11)*: Puppeteer HTML→PDF pipeline. `pdf.service.js` owns a reused, self-healing browser singleton (launched lazily, closed on SIGTERM/SIGINT). Templates in `backend/templates/` (`invoice.template.js`, `report.template.js`) with inlined base64 logo (`assets/logo.png`, resized 609KB→75KB) + fonts (`assets/fonts.css` — Playfair Display + Nunito, latin subset, embedded so it renders offline). Routes served `inline`; frontend `PrintBillButton` / ReportsPage Print button fetch the PDF with the JWT auth header and open it in a new tab (native viewer = print **or** save). Retired the old client-side `printInvoice`/`printReport`.
@@ -873,8 +884,9 @@ bill create / edit / deliver / cancel as the same call. Stock is deliberately al
 (stock, shortfalls, movements, summary, owner-only reconcile). The sign of a manual movement is derived from its
 TYPE, never the client, so "damage: +50" can never add stock; `sale` is service-only.*
 
-*Also laid the complete groundwork for the FUTURE pending/delivered editable-bill feature: `Bill.status`
-(default `delivered` → today's behaviour is unchanged), `Bill.revision` for optimistic locking, `items[].productId`,
+*Also laid the groundwork for the pending/delivered editable-bill feature — **shipped the same week as Phase 12**,
+so the "future" framing below is historical: `Bill.status` (defaulted to `delivered` at the time of this note; new
+bills now default to `pending`), `Bill.revision` for optimistic locking, `items[].productId`,
 and a partial unique index on `billNo` so pending bills can coexist without one. The key decision: a pending bill is
 an ORDER, not an invoice — it reserves stock but books NO money (no invoice number, no `Transaction` row, excluded
 from the agency balance via `balanceBearingBills()`), which is exactly what makes editing it safe and what stops a

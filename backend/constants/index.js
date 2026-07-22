@@ -25,9 +25,10 @@ const AGENCY_STATUS = Object.freeze({
 //             physical stock (onHand) leaves. Immutable from here on.
 // cancelled → reverses whatever the bill was still holding.
 //
-// NOTE: new bills default to `delivered`, preserving today's behaviour exactly.
-// The pending path is fully implemented in the stock engine but nothing takes it
-// until the pending/delivered UI is built.
+// New bills default to `pending` (bill.service.js:createBill) — billing is order-first.
+// `status: "delivered"` is still accepted so a bill can be raised and shipped in one
+// step, but the frontend no longer does that: it takes the order, then delivers or
+// cancels it from the Billing screen.
 const BILL_STATUS = Object.freeze({
   PENDING:   "pending",
   DELIVERED: "delivered",
