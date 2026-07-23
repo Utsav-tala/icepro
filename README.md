@@ -276,7 +276,7 @@ Full walkthrough in **[DEPLOYMENT.md](./DEPLOYMENT.md)**, including the free-tie
 
 - GitHub: [@Utsav-tala](https://github.com/Utsav-tala)
 - LinkedIn: [utsav-tala](https://www.linkedin.com/in/utsav-tala-aa073b2b4/)
-- Email: [202303018@dau.ac.in](mailto:202303018@dau.ac.in)
+- Email: [202303018@dau.ac.in](mailto:utsavtala@gmail.com)
 
 ---
 
