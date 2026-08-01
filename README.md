@@ -275,7 +275,7 @@ Full walkthrough in **[DEPLOYMENT.md](./DEPLOYMENT.md)**, including the free-tie
 **Utsav Tala** — B.Tech, Mathematics & Computing, Dhirubhai Ambani University
 
 - GitHub: [@Utsav-tala](https://github.com/Utsav-tala)
-- LinkedIn: [utsav-tala](https://www.linkedin.com/in/utsav-tala-aa073b2b4/)
+- LinkedIn: [utsav-tala](https://www.linkedin.com/in/utsav-tala/)
 - Email: [202303018@dau.ac.in](mailto:utsavtala@gmail.com)
 
 ---
