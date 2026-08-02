@@ -35,6 +35,40 @@ It is used by the business **owner** and **managers**. It deliberately demonstra
 
 ---
 
+## 📸 Screenshots
+
+### Dashboard
+Live business metrics, pending-order alert, and the per-agency outstanding overview.
+
+![Dashboard](./docs/screenshots/01-dashboard.png)
+
+### Billing — the order → invoice lifecycle
+Pending orders reserve stock but book no money, so they stay editable until **Deliver** burns the invoice number. Each delivered bill can be printed as a PDF or shared to WhatsApp.
+
+![Billing](./docs/screenshots/02-billing.png)
+
+### Inventory
+`onHand`, `committed` and the derived `available` for all 216 products. A negative `available` is not an error — it is the production signal, pinned to the top of the page.
+
+![Inventory](./docs/screenshots/03-inventory.png)
+
+### Reports & Analytics
+One `$facet` aggregation behind date / agency / product filters, with a print-to-PDF view.
+
+![Reports](./docs/screenshots/05-reports.png)
+
+### Server-rendered PDF invoice
+Rendered by headless Chrome (Puppeteer) with the logo and fonts inlined, so it prints identically anywhere. Two series: `VMP/YY-YY/####` (GST) and `GB/YY-YY/####` (Non-GST). *Bank details redacted.*
+
+<img src="./docs/screenshots/04-invoice.png" alt="PDF invoice" width="520">
+
+### Responsive
+The same app on a phone — managers take orders from inside the agency's shop.
+
+<img src="./docs/screenshots/06-mobile.png" alt="Mobile view" width="280">
+
+---
+
 ## ✨ Features
 
 ### Authentication & Security
