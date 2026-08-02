@@ -35,7 +35,7 @@ It is used by the business **owner** and **managers**. It deliberately demonstra
 
 ---
 
-## 📸 Screenshots
+## 🖥️ Dashboard Overview
 
 ![Dashboard](./docs/screenshots/dashboard.png)
 
