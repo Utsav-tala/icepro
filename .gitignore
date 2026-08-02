@@ -28,6 +28,13 @@ backend/.cache/
 # local editor / agent settings
 .claude/
 
+# internal working notes — kept locally, not published
+ICEPRO_MEMORY.md
+TDD.md
+
+# screenshots / marketing assets (contain live business data)
+Post_Photos/
+
 # misc
 .DS_Store
 npm-debug.log*

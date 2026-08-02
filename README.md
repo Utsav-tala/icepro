@@ -137,8 +137,6 @@ icepro/
 ├── package.json              # Root: convenience scripts only (no runtime deps)
 ├── vercel.json               # Vercel build config (builds from frontend/)
 ├── DEPLOYMENT.md             # Step-by-step deploy guide + free-tier tradeoffs
-├── ICEPRO_MEMORY.md          # Project single-source-of-truth doc
-├── TDD.md                    # Technical design document
 │
 ├── frontend/                 # React app (Create React App)
 │   ├── .env.example
@@ -276,10 +274,10 @@ Full walkthrough in **[DEPLOYMENT.md](./DEPLOYMENT.md)**, including the free-tie
 
 - GitHub: [@Utsav-tala](https://github.com/Utsav-tala)
 - LinkedIn: [utsav-tala](https://www.linkedin.com/in/utsav-tala/)
-- Email: [202303018@dau.ac.in](mailto:utsavtala@gmail.com)
+- Email: [utsavtala@gmail.com](mailto:utsavtala@gmail.com)
 
 ---
 
 ## 📄 License
 
-No `LICENSE` file has been added yet — `backend/package.json` currently declares `ISC`. Pick one and commit the matching license file before treating this repo as open source.
+Released under the [ISC License](./LICENSE).
